@@ -46,15 +46,17 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
     );
   }
 
-  const displayTerminalId = activeTerminalId ?? layoutId;
+  // The detail panel always shows the tab root terminal's title/notes —
+  // split panes are purely a layout concern and don't have their own metadata.
+  // Split actions still target whichever pane is currently focused.
+  const splitTarget = activeTerminalId ?? layoutId;
 
   return (
     <div className="project-view">
       <DetailPanel
-        terminalId={displayTerminalId}
-        onSplitHorizontal={() => onSplitPane(displayTerminalId, "horizontal")}
-        onSplitVertical={() => onSplitPane(displayTerminalId, "vertical")}
-        onClose={() => onClosePane(displayTerminalId)}
+        terminalId={layoutId}
+        onSplitHorizontal={() => onSplitPane(splitTarget, "horizontal")}
+        onSplitVertical={() => onSplitPane(splitTarget, "vertical")}
         style={{ width: detailWidth, minWidth: detailWidth }}
       />
       <div

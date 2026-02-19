@@ -451,15 +451,17 @@ export default function App() {
       e.preventDefault();
       const { projects: allProjects, projectOrder, nodes: currentNodes } = useProjectStore.getState();
       // Build flat list of { terminalId, projectId } across all projects in sidebar order
+      const sessions = useTerminalStore.getState().sessions;
       const allTerminals: { terminalId: string; projectId: string }[] = [];
       for (const projId of projectOrder) {
         const proj = allProjects[projId];
-        if (!proj) continue;
+        if (!proj || !proj.expanded) continue;
         const rootNode = currentNodes[proj.rootGroupId];
         if (!rootNode?.children) continue;
         for (const childId of rootNode.children) {
           const child = currentNodes[childId];
-          if (child?.type === "terminal" && child.terminalId) {
+          // Match sidebar visibility: TerminalNode returns null when session is missing
+          if (child?.type === "terminal" && child.terminalId && sessions[child.terminalId]) {
             allTerminals.push({ terminalId: child.terminalId, projectId: projId });
           }
         }
@@ -478,13 +480,10 @@ export default function App() {
       const forward = e.code === "BracketRight";
       let nextIdx: number;
       if (currentIdx === -1) {
-        // Not found — go to first or last depending on direction
         nextIdx = forward ? 0 : allTerminals.length - 1;
       } else if (forward) {
-        // At end → jump to first, otherwise next
         nextIdx = currentIdx >= allTerminals.length - 1 ? 0 : currentIdx + 1;
       } else {
-        // At start → jump to last, otherwise previous
         nextIdx = currentIdx <= 0 ? allTerminals.length - 1 : currentIdx - 1;
       }
       const next = allTerminals[nextIdx];
@@ -526,6 +525,7 @@ export default function App() {
       <div className="main-content">
         {activeProject && activeLayoutKey ? (
           <ProjectView
+            key={activeLayoutKey}
             layoutId={activeLayoutKey}
             onSplitPane={handleSplitPane}
             onClosePane={handleClosePane}

@@ -8,14 +8,12 @@ interface TerminalHeaderProps {
   layoutId: string;
   onSplitHorizontal: () => void;
   onSplitVertical: () => void;
-  onClose: () => void;
 }
 
 export function TerminalHeader({
   terminalId,
   onSplitHorizontal,
   onSplitVertical,
-  onClose,
 }: TerminalHeaderProps) {
   const session = useTerminalStore((s) => s.sessions[terminalId]);
   const updateTitle = useTerminalStore((s) => s.updateTitle);
@@ -98,11 +96,6 @@ export function TerminalHeader({
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
             <rect x="1" y="1" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="1.2"/>
             <line x1="1" y1="7" x2="13" y2="7" stroke="currentColor" strokeWidth="1.2"/>
-          </svg>
-        </button>
-        <button onClick={onClose} title="Close (⌘W)">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M3.5 3.5L10.5 10.5M10.5 3.5L3.5 10.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
           </svg>
         </button>
       </div>
