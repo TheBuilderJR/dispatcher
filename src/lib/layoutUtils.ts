@@ -74,6 +74,35 @@ export function findTerminalIds(root: LayoutNode): string[] {
   return [...findTerminalIds(root.first), ...findTerminalIds(root.second)];
 }
 
+/** Find the nearest sibling terminal when a pane is about to be closed. */
+export function findSiblingTerminalId(
+  root: LayoutNode,
+  targetTerminalId: string
+): string | null {
+  if (root.type === "terminal") return null;
+
+  const firstIds = findTerminalIds(root.first);
+  const secondIds = findTerminalIds(root.second);
+
+  // Target is a direct leaf child – sibling is the closest terminal in the other subtree
+  if (root.first.type === "terminal" && root.first.terminalId === targetTerminalId) {
+    return secondIds[0] ?? null;
+  }
+  if (root.second.type === "terminal" && root.second.terminalId === targetTerminalId) {
+    return firstIds[firstIds.length - 1] ?? null;
+  }
+
+  // Recurse into whichever subtree contains the target
+  if (firstIds.includes(targetTerminalId)) {
+    return findSiblingTerminalId(root.first, targetTerminalId);
+  }
+  if (secondIds.includes(targetTerminalId)) {
+    return findSiblingTerminalId(root.second, targetTerminalId);
+  }
+
+  return null;
+}
+
 /** Find the layout key (tab root terminal ID) that contains the given terminal. */
 export function findLayoutKeyForTerminal(
   layouts: Record<string, LayoutNode>,

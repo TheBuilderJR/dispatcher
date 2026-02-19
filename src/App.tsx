@@ -7,7 +7,7 @@ import { useLayoutStore } from "./stores/useLayoutStore";
 import { useTerminalStore } from "./stores/useTerminalStore";
 import { useFontSizeStore } from "./stores/useFontSizeStore";
 import { onTerminalExit } from "./lib/terminalEvents";
-import { findTerminalIds, findLayoutKeyForTerminal } from "./lib/layoutUtils";
+import { findTerminalIds, findLayoutKeyForTerminal, findSiblingTerminalId } from "./lib/layoutUtils";
 import { closeTerminal, warmPool, getTerminalCwd, writeTerminal } from "./lib/tauriCommands";
 import { disposeTerminalInstance } from "./hooks/useTerminalBridge";
 import "./App.css";
@@ -353,10 +353,19 @@ export default function App() {
           }
         }
       } else {
-        // Closing a split pane within a tab
+        // Closing a split pane within a tab.
+        // Find the sibling BEFORE mutating the layout so focus stays in this tab
+        // instead of jumping to a terminal in a different tab.
+        const layout = allLayouts[layoutKey];
+        const sibling = layout ? findSiblingTerminalId(layout, terminalId) : null;
+
         closeTerminal(terminalId).catch(() => {});
         disposeTerminalInstance(terminalId);
         removeTerminalFromLayout(layoutKey, terminalId);
+
+        if (sibling && useTerminalStore.getState().activeTerminalId === terminalId) {
+          useTerminalStore.getState().setActiveTerminal(sibling);
+        }
         removeSession(terminalId);
       }
 
