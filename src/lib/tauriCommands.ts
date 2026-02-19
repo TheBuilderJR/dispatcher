@@ -1,0 +1,49 @@
+import { invoke, Channel } from "@tauri-apps/api/core";
+
+export interface TerminalOutputPayload {
+  terminal_id: string;
+  data: string;
+}
+
+export async function createTerminal(
+  terminalId: string,
+  onOutput: Channel<TerminalOutputPayload>,
+  cwd?: string,
+  cols: number = 80,
+  rows: number = 24
+): Promise<void> {
+  await invoke("create_terminal", {
+    terminalId,
+    cwd: cwd ?? null,
+    cols,
+    rows,
+    onOutput,
+  });
+}
+
+export async function writeTerminal(
+  terminalId: string,
+  data: string
+): Promise<void> {
+  await invoke("write_terminal", { terminalId, data });
+}
+
+export async function resizeTerminal(
+  terminalId: string,
+  cols: number,
+  rows: number
+): Promise<void> {
+  await invoke("resize_terminal", { terminalId, cols, rows });
+}
+
+export async function closeTerminal(terminalId: string): Promise<void> {
+  await invoke("close_terminal", { terminalId });
+}
+
+export async function warmPool(count: number = 3): Promise<void> {
+  await invoke("warm_pool", { count });
+}
+
+export async function getTerminalCwd(terminalId: string): Promise<string | null> {
+  return await invoke("get_terminal_cwd", { terminalId });
+}

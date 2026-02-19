@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#111111"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background with macOS-standard padding (100px inset) -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+
+  <!-- Bold terminal chevron -->
+  <path d="M 248 380 L 472 512 L 248 644"
+        stroke="#ededed" stroke-width="68" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+  <!-- Three cursor lines representing dispatched terminals -->
+  <line x1="556" y1="400" x2="720" y2="400" stroke="#ededed" stroke-width="52" stroke-linecap="round"/>
+  <line x1="556" y1="512" x2="776" y2="512" stroke="#ededed" stroke-width="52" stroke-linecap="round"/>
+  <line x1="556" y1="624" x2="720" y2="624" stroke="#ededed" stroke-width="52" stroke-linecap="round"/>
+</svg>
