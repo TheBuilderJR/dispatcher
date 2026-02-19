@@ -29,6 +29,63 @@ interface TerminalInstance {
 const instances = new Map<string, TerminalInstance>();
 const createdPtys = new Set<string>();
 
+// ---------------------------------------------------------------------------
+// Write batching — coalesce PTY output per animation frame so xterm.js
+// renders once instead of on every 4096-byte IPC chunk.
+// ---------------------------------------------------------------------------
+
+const writeBuffers = new Map<string, string[]>();
+const writeRafs = new Map<string, number>();
+
+function batchedWrite(terminalId: string, data: string) {
+  let buffer = writeBuffers.get(terminalId);
+  if (!buffer) {
+    buffer = [];
+    writeBuffers.set(terminalId, buffer);
+  }
+  buffer.push(data);
+
+  if (!writeRafs.has(terminalId)) {
+    const rafId = requestAnimationFrame(() => {
+      writeRafs.delete(terminalId);
+      const buf = writeBuffers.get(terminalId);
+      if (buf && buf.length > 0) {
+        const combined = buf.join("");
+        buf.length = 0;
+        instances.get(terminalId)?.xterm.write(combined);
+      }
+    });
+    writeRafs.set(terminalId, rafId);
+  }
+}
+
+function disposeWriteBatch(terminalId: string) {
+  const rafId = writeRafs.get(terminalId);
+  if (rafId !== undefined) {
+    cancelAnimationFrame(rafId);
+    writeRafs.delete(terminalId);
+  }
+  writeBuffers.delete(terminalId);
+}
+
+// ---------------------------------------------------------------------------
+// WebGL addon — load with automatic recovery on context loss.
+// ---------------------------------------------------------------------------
+
+function loadWebGLAddon(xterm: Terminal) {
+  try {
+    const addon = new WebglAddon();
+    addon.onContextLoss(() => {
+      addon.dispose();
+      // Re-attempt WebGL after a short delay; falls back to canvas in the interim.
+      setTimeout(() => loadWebGLAddon(xterm), 500);
+    });
+    xterm.loadAddon(addon);
+  } catch {
+    // Canvas fallback is automatic
+  }
+}
+
 /** Dispose an xterm instance and its PTY tracking when a terminal is truly closed. */
 export function disposeTerminalInstance(terminalId: string) {
   const inst = instances.get(terminalId);
@@ -37,6 +94,7 @@ export function disposeTerminalInstance(terminalId: string) {
     instances.delete(terminalId);
   }
   createdPtys.delete(terminalId);
+  disposeWriteBatch(terminalId);
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +109,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
   const fitAddonRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const pendingFitRef = useRef<number>(0);
 
   useEffect(() => {
     const mountPoint = containerRef.current;
@@ -102,14 +161,8 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
 
       xterm.open(element);
 
-      // Try WebGL, fall back to canvas
-      try {
-        const webglAddon = new WebglAddon();
-        webglAddon.onContextLoss(() => webglAddon.dispose());
-        xterm.loadAddon(webglAddon);
-      } catch {
-        // Canvas fallback is automatic
-      }
+      // Try WebGL with automatic recovery on context loss
+      loadWebGLAddon(xterm);
 
       // Handle Cmd+key shortcuts that xterm.js ignores by default
       xterm.attachCustomKeyEventHandler((e) => {
@@ -163,9 +216,9 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
 
         const channel = new Channel<TerminalOutputPayload>();
         channel.onmessage = (msg) => {
-          // Write to the persistent xterm instance (not the ref, which may
-          // be null between unmount/remount).
-          instances.get(msg.terminal_id)?.xterm.write(msg.data);
+          // Batch writes so xterm.js renders once per frame instead of
+          // once per 4096-byte IPC chunk.
+          batchedWrite(msg.terminal_id, msg.data);
         };
 
         const cols = i.xterm.cols;
@@ -194,12 +247,16 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       const i = instances.get(terminalId);
       if (i) {
         i.xterm.options.fontSize = state.fontSize;
-        i.fitAddon.fit();
+        cancelAnimationFrame(pendingFitRef.current);
+        pendingFitRef.current = requestAnimationFrame(() => {
+          i.fitAddon.fit();
+        });
       }
     });
 
     return () => {
       cancelAnimationFrame(rafId);
+      cancelAnimationFrame(pendingFitRef.current);
       unsubFontSize();
       dataDisposable.dispose();
       resizeDisposable.dispose();
@@ -216,8 +273,13 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
     };
   }, [terminalId]); // cwd intentionally omitted — only used for initial PTY creation
 
+  // Debounced fit — coalesces rapid resize events (from ResizeObserver during
+  // window/split-pane drag) into a single fit() per animation frame.
   const fit = useCallback(() => {
-    fitAddonRef.current?.fit();
+    cancelAnimationFrame(pendingFitRef.current);
+    pendingFitRef.current = requestAnimationFrame(() => {
+      fitAddonRef.current?.fit();
+    });
   }, []);
 
   return { containerRef, xtermRef, fitAddonRef, searchAddonRef, fit };

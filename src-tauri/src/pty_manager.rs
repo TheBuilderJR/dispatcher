@@ -7,6 +7,67 @@ use tauri::{ipc::Channel, AppHandle, Emitter};
 
 const MAX_POOL_SIZE: usize = 3;
 
+// ---------------------------------------------------------------------------
+// UTF-8 streaming helper
+// ---------------------------------------------------------------------------
+
+/// Find the byte index at which to split a buffer so that everything before the
+/// index is complete UTF-8.  Any trailing bytes that form an incomplete
+/// multi-byte sequence are left for the caller to carry over to the next read.
+///
+/// This prevents `from_utf8_lossy` from destroying characters that straddle
+/// a 4096-byte read boundary.
+fn utf8_split_point(bytes: &[u8]) -> usize {
+    let len = bytes.len();
+    if len == 0 {
+        return 0;
+    }
+
+    // UTF-8 multi-byte sequences are at most 4 bytes.  We only need to
+    // inspect the last 1–3 bytes to decide whether the buffer ends with
+    // an incomplete character.
+    //
+    //   0xxxxxxx  →  1-byte (ASCII), always complete
+    //   110xxxxx  →  2-byte lead
+    //   1110xxxx  →  3-byte lead
+    //   11110xxx  →  4-byte lead
+    //   10xxxxxx  →  continuation byte
+
+    let check = std::cmp::min(3, len);
+    for back in 1..=check {
+        let i = len - back;
+        let b = bytes[i];
+
+        if b & 0x80 == 0 {
+            // ASCII — everything up to and including this byte is complete.
+            return len;
+        }
+
+        if b & 0xC0 != 0x80 {
+            // Leading byte found.
+            let expected = if b & 0xF8 == 0xF0 {
+                4
+            } else if b & 0xF0 == 0xE0 {
+                3
+            } else {
+                2
+            };
+            let actual = len - i;
+            if actual >= expected {
+                // Character is complete.
+                return len;
+            }
+            // Incomplete — split before this lead byte.
+            return i;
+        }
+        // Continuation byte — keep scanning backwards.
+    }
+
+    // All inspected bytes are continuation bytes (shouldn't happen in valid
+    // UTF-8).  Pass everything through and let lossy conversion handle it.
+    len
+}
+
 // -- Output routing for reader threads --
 
 enum OutputMode {
@@ -99,33 +160,68 @@ impl PtyManager {
 
         self.pool.lock().unwrap().push(entry);
 
-        // Reader thread: buffers output while pooled, streams when assigned
+        // Reader thread: buffers output while pooled, streams when assigned.
+        // Uses a carry buffer to avoid corrupting multi-byte UTF-8 characters
+        // that straddle 4096-byte read boundaries.
         let handle = app_handle.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
+            let mut carry: Vec<u8> = Vec::new();
+
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let mut r = router.lock().unwrap();
-                        match &mut r.mode {
-                            OutputMode::Buffering(buffer) => {
-                                buffer.extend_from_slice(&buf[..n]);
-                            }
-                            OutputMode::Streaming {
-                                channel,
-                                terminal_id,
-                            } => {
-                                let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                                let _ = channel.send(TerminalOutput {
-                                    terminal_id: terminal_id.clone(),
-                                    data,
-                                });
+                        carry.extend_from_slice(&buf[..n]);
+
+                        let split = utf8_split_point(&carry);
+
+                        if split > 0 {
+                            let mut r = router.lock().unwrap();
+                            match &mut r.mode {
+                                OutputMode::Buffering(buffer) => {
+                                    buffer.extend_from_slice(&carry[..split]);
+                                }
+                                OutputMode::Streaming {
+                                    channel,
+                                    terminal_id,
+                                } => {
+                                    let data =
+                                        String::from_utf8_lossy(&carry[..split]).to_string();
+                                    let _ = channel.send(TerminalOutput {
+                                        terminal_id: terminal_id.clone(),
+                                        data,
+                                    });
+                                }
                             }
                         }
+
+                        // Keep only incomplete trailing bytes.
+                        carry.drain(..split);
                     }
                     Err(_) => break,
                 }
+            }
+
+            // Flush any remaining carry bytes at EOF.
+            if !carry.is_empty() {
+                let mut r = router.lock().unwrap();
+                match &mut r.mode {
+                    OutputMode::Buffering(buffer) => {
+                        buffer.extend_from_slice(&carry);
+                    }
+                    OutputMode::Streaming {
+                        channel,
+                        terminal_id,
+                    } => {
+                        let data = String::from_utf8_lossy(&carry).to_string();
+                        let _ = channel.send(TerminalOutput {
+                            terminal_id: terminal_id.clone(),
+                            data,
+                        });
+                    }
+                }
+                drop(r);
             }
 
             // EOF — get exit code
@@ -168,6 +264,16 @@ impl PtyManager {
         // Try pool first — even when cwd is specified we can cd into it
         let entry = self.pool.lock().unwrap().pop();
         if let Some(entry) = entry {
+            // Resize to actual dimensions FIRST, before replaying buffered
+            // output.  The pool PTY starts at 80×24; if the frontend is a
+            // different size the replayed content would use wrong line wrapping.
+            let _ = entry.master.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+
             // Switch router from buffering to streaming
             {
                 let mut r = entry.router.lock().unwrap();
@@ -191,14 +297,6 @@ impl PtyManager {
                 };
                 r.assigned_id = Some(terminal_id.clone());
             }
-
-            // Resize to actual dimensions
-            let _ = entry.master.resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            });
 
             let mut session = PtySession {
                 master: entry.master,
@@ -279,18 +377,38 @@ impl PtyManager {
         let handle = app_handle.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
+            let mut carry: Vec<u8> = Vec::new();
+
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                        let _ = channel.send(TerminalOutput {
-                            terminal_id: tid.clone(),
-                            data,
-                        });
+                        carry.extend_from_slice(&buf[..n]);
+
+                        let split = utf8_split_point(&carry);
+
+                        if split > 0 {
+                            let data = String::from_utf8_lossy(&carry[..split]).to_string();
+                            let _ = channel.send(TerminalOutput {
+                                terminal_id: tid.clone(),
+                                data,
+                            });
+                        }
+
+                        // Keep only incomplete trailing bytes.
+                        carry.drain(..split);
                     }
                     Err(_) => break,
                 }
+            }
+
+            // Flush any remaining carry bytes at EOF.
+            if !carry.is_empty() {
+                let data = String::from_utf8_lossy(&carry).to_string();
+                let _ = channel.send(TerminalOutput {
+                    terminal_id: tid.clone(),
+                    data,
+                });
             }
 
             let exit_code = {
@@ -353,13 +471,17 @@ impl PtyManager {
     }
 
     pub fn get_terminal_cwd(&self, terminal_id: &str) -> Result<Option<String>, PtyError> {
-        let sessions = self.sessions.lock().unwrap();
-        let session = sessions
-            .get(terminal_id)
-            .ok_or_else(|| PtyError::from(format!("Terminal {} not found", terminal_id)))?;
-
-        let child_guard = session.child.lock().unwrap();
-        let pid = child_guard.as_ref().and_then(|c| c.process_id());
+        // Extract the PID while holding the lock, then drop it before running
+        // lsof.  Previously the sessions lock was held across the lsof call,
+        // blocking all other PTY operations (create, write, resize, close).
+        let pid = {
+            let sessions = self.sessions.lock().unwrap();
+            let session = sessions
+                .get(terminal_id)
+                .ok_or_else(|| PtyError::from(format!("Terminal {} not found", terminal_id)))?;
+            let child_guard = session.child.lock().unwrap();
+            child_guard.as_ref().and_then(|c| c.process_id())
+        };
 
         match pid {
             Some(pid) => {
