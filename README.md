@@ -2,6 +2,8 @@
 
 A cross-platform desktop terminal multiplexer built with Tauri, React, and xterm.js. Organize your terminal sessions into projects and groups with a visual tree sidebar, split panes, and drag-and-drop reordering.
 
+![Uploading CleanShot 2026-02-19 at 13.36.51@2x.png…]()
+
 ## Features
 
 - **Project-based organization** — Group terminals by project, each with its own working directory
