@@ -53,6 +53,12 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Apple code signing (macOS only — ignored on other platforms)
+          APPLE_CERTIFICATE: ${{ secrets.CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+          # Apple notarization
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Dispatcher ${{ github.ref_name }}'

@@ -7,7 +7,7 @@ import { useLayoutStore } from "./stores/useLayoutStore";
 import { useTerminalStore } from "./stores/useTerminalStore";
 import { useFontSizeStore } from "./stores/useFontSizeStore";
 import { onTerminalExit } from "./lib/terminalEvents";
-import { findTerminalIds } from "./lib/layoutUtils";
+import { findTerminalIds, findLayoutKeyForTerminal } from "./lib/layoutUtils";
 import { closeTerminal, warmPool, getTerminalCwd, writeTerminal } from "./lib/tauriCommands";
 import { disposeTerminalInstance } from "./hooks/useTerminalBridge";
 import "./App.css";
@@ -38,6 +38,7 @@ export default function App() {
   const initLayout = useLayoutStore((s) => s.initLayout);
   const splitTerminal = useLayoutStore((s) => s.splitTerminal);
   const removeTerminalFromLayout = useLayoutStore((s) => s.removeTerminal);
+  const removeLayout = useLayoutStore((s) => s.removeLayout);
 
   const activeProject = activeProjectId ? projects[activeProjectId] : null;
 
@@ -88,7 +89,6 @@ export default function App() {
     (projectName: string, terminalName: string) => {
       const projId = generateId();
       const rootGroupId = generateId();
-      const layoutId = generateId();
       const terminalId = generateId();
 
       addProject({
@@ -96,7 +96,6 @@ export default function App() {
         name: projectName,
         cwd: "",
         rootGroupId,
-        layoutId,
         expanded: true,
       });
 
@@ -119,35 +118,16 @@ export default function App() {
       addChildToNode(rootGroupId, nodeId);
 
       addSession(terminalId, terminalName);
-      initLayout(layoutId, terminalId);
+      initLayout(terminalId, terminalId);
     },
     [addProject, addNode, addChildToNode, addSession, initLayout]
   );
 
-  // Synchronous cwd lookup from existing sessions (no lsof / IPC)
-  const getProjectTerminalCwdSync = useCallback(
-    (projectId: string): string | undefined => {
-      const project = projects[projectId];
-      if (!project) return undefined;
-      const layout = useLayoutStore.getState().layouts[project.layoutId];
-      if (!layout) return undefined;
-      const ids = findTerminalIds(layout);
-      for (const id of ids) {
-        const session = useTerminalStore.getState().sessions[id];
-        if (session?.cwd) return session.cwd;
-      }
-      return undefined;
-    },
-    [projects]
-  );
 
   const createTerminalInProject = useCallback(
     (projectId: string, terminalName: string) => {
       const project = projects[projectId];
       if (!project) return;
-
-      // Use stored cwd from an existing session (instant) instead of lsof
-      const cwd = getProjectTerminalCwdSync(projectId);
 
       const terminalId = generateId();
       const nodeId = generateId();
@@ -161,24 +141,32 @@ export default function App() {
       });
       addChildToNode(project.rootGroupId, nodeId);
 
-      addSession(terminalId, terminalName, cwd);
+      addSession(terminalId, terminalName);
+      // Each tab terminal gets its own standalone layout
+      initLayout(terminalId, terminalId);
 
-      const existingLayout = useLayoutStore.getState().layouts[project.layoutId];
-      if (existingLayout) {
-        const activeTermId = useTerminalStore.getState().activeTerminalId;
-        if (activeTermId) {
-          splitTerminal(project.layoutId, activeTermId, terminalId, "horizontal");
-        } else {
-          const ids = findTerminalIds(existingLayout);
-          if (ids.length > 0) {
-            splitTerminal(project.layoutId, ids[0], terminalId, "horizontal");
+      // Query the actual cwd from an existing terminal in this project
+      // (like split pane does) and cd into it once the new PTY is ready.
+      const allNodes = useProjectStore.getState().nodes;
+      const rootNode = allNodes[project.rootGroupId];
+      if (rootNode?.children) {
+        for (const childId of rootNode.children) {
+          const child = allNodes[childId];
+          if (child?.type === "terminal" && child.terminalId && child.terminalId !== terminalId) {
+            getTerminalCwd(child.terminalId)
+              .then((cwd) => {
+                if (cwd) {
+                  const escaped = cwd.replace(/'/g, "'\\''");
+                  writeTerminal(terminalId, ` cd '${escaped}' && clear\n`).catch(() => {});
+                }
+              })
+              .catch(() => {});
+            break;
           }
         }
-      } else {
-        initLayout(project.layoutId, terminalId);
       }
     },
-    [projects, getProjectTerminalCwdSync, addNode, addChildToNode, addSession, initLayout, splitTerminal]
+    [projects, addNode, addChildToNode, addSession, initLayout]
   );
 
   const handleNewTerminal = useCallback(() => {
@@ -220,24 +208,12 @@ export default function App() {
       }
       if (!treeNodeId) return;
 
-      // Move the tree node to the target project
+      // Each tab terminal owns its own layout (keyed by terminalId),
+      // so moving between projects only requires moving the tree node.
       const moveNode = useProjectStore.getState().moveNode;
       moveNode(treeNodeId, toProject.rootGroupId);
-
-      // Remove from source layout, add to target layout
-      removeTerminalFromLayout(fromProject.layoutId, terminalId);
-
-      const targetLayout = useLayoutStore.getState().layouts[toProject.layoutId];
-      if (targetLayout) {
-        const ids = findTerminalIds(targetLayout);
-        if (ids.length > 0) {
-          splitTerminal(toProject.layoutId, ids[0], terminalId, "horizontal");
-        }
-      } else {
-        initLayout(toProject.layoutId, terminalId);
-      }
     },
-    [projects, nodes, removeTerminalFromLayout, splitTerminal, initLayout]
+    [projects, nodes]
   );
 
   const handleDeleteProject = useCallback(
@@ -245,27 +221,31 @@ export default function App() {
       const project = projects[projectId];
       if (!project) return;
 
-      // Close every pane in the layout (includes split panes without tree nodes)
-      const layout = useLayoutStore.getState().layouts[project.layoutId];
-      if (layout) {
-        for (const id of findTerminalIds(layout)) {
-          closeTerminal(id).catch(() => {});
-          disposeTerminalInstance(id);
-          removeSession(id);
-        }
-      }
-
-      // Clean up sidebar tree nodes
+      const allLayouts = useLayoutStore.getState().layouts;
       const rootNode = nodes[project.rootGroupId];
+
+      // Close every tab and its split panes
       if (rootNode?.children) {
         for (const childId of rootNode.children) {
+          const child = nodes[childId];
+          if (child?.type === "terminal" && child.terminalId) {
+            const layout = allLayouts[child.terminalId];
+            if (layout) {
+              for (const id of findTerminalIds(layout)) {
+                closeTerminal(id).catch(() => {});
+                disposeTerminalInstance(id);
+                removeSession(id);
+              }
+            }
+            removeLayout(child.terminalId);
+          }
           removeNode(childId);
         }
       }
       removeNode(project.rootGroupId);
       removeProject(projectId);
     },
-    [projects, nodes, removeProject, removeNode, removeSession]
+    [projects, nodes, removeProject, removeNode, removeSession, removeLayout]
   );
 
   const handleDeleteTerminal = useCallback(
@@ -286,17 +266,27 @@ export default function App() {
         }
       }
 
-      closeTerminal(terminalId).catch(() => {});
-      disposeTerminalInstance(terminalId);
-      removeTerminalFromLayout(project.layoutId, terminalId);
-      removeSession(terminalId);
+      // Close all terminals in this tab (including split panes)
+      const layout = useLayoutStore.getState().layouts[terminalId];
+      if (layout) {
+        for (const id of findTerminalIds(layout)) {
+          closeTerminal(id).catch(() => {});
+          disposeTerminalInstance(id);
+          removeSession(id);
+        }
+      }
+      removeLayout(terminalId);
     },
-    [projects, nodes, removeChildFromNode, removeNode, removeSession, removeTerminalFromLayout]
+    [projects, nodes, removeChildFromNode, removeNode, removeSession, removeLayout]
   );
 
   const handleSplitPane = useCallback(
     (targetTerminalId: string, direction: "horizontal" | "vertical") => {
       if (!activeProject) return;
+
+      const allLayouts = useLayoutStore.getState().layouts;
+      const layoutKey = findLayoutKeyForTerminal(allLayouts, targetTerminalId);
+      if (!layoutKey) return;
 
       const terminalId = generateId();
 
@@ -304,7 +294,7 @@ export default function App() {
       // tree node.  The sidebar tracks explicitly created terminals (⌘T);
       // split panes are purely a layout concern.
       addSession(terminalId, undefined);
-      splitTerminal(activeProject.layoutId, targetTerminalId, terminalId, direction);
+      splitTerminal(layoutKey, targetTerminalId, terminalId, direction);
 
       // Look up the source terminal's actual cwd in the background
       // and cd into it once the new PTY is ready.
@@ -324,48 +314,69 @@ export default function App() {
     (terminalId: string) => {
       if (!activeProject) return;
 
-      closeTerminal(terminalId).catch(() => {});
-      disposeTerminalInstance(terminalId);
-      removeTerminalFromLayout(activeProject.layoutId, terminalId);
-      removeSession(terminalId);
+      const allLayouts = useLayoutStore.getState().layouts;
+      const layoutKey = findLayoutKeyForTerminal(allLayouts, terminalId);
+      if (!layoutKey) return;
 
-      // Remove only the tree node for this specific terminal
-      const currentNodes = useProjectStore.getState().nodes;
-      const rootNode = currentNodes[activeProject.rootGroupId];
-      if (rootNode?.children) {
-        for (const childId of rootNode.children) {
-          const child = currentNodes[childId];
-          if (child?.type === "terminal" && child.terminalId === terminalId) {
-            removeChildFromNode(activeProject.rootGroupId, childId);
-            removeNode(childId);
-            break;
+      const isTabRoot = layoutKey === terminalId;
+
+      if (isTabRoot) {
+        // Closing a tab root: close the entire tab (including split panes)
+        const layout = allLayouts[layoutKey];
+        if (layout) {
+          const allTerminals = findTerminalIds(layout);
+          // Close split panes first, then the tab root, so activeTerminalId
+          // falls through to another tab (not an about-to-be-closed split pane).
+          const splitPanes = allTerminals.filter((id) => id !== terminalId);
+          for (const id of splitPanes) {
+            closeTerminal(id).catch(() => {});
+            disposeTerminalInstance(id);
+            removeSession(id);
           }
         }
+        closeTerminal(terminalId).catch(() => {});
+        disposeTerminalInstance(terminalId);
+        removeSession(terminalId);
+        removeLayout(layoutKey);
+
+        // Remove the tree node for this tab terminal
+        const currentNodes = useProjectStore.getState().nodes;
+        const rootNode = currentNodes[activeProject.rootGroupId];
+        if (rootNode?.children) {
+          for (const childId of rootNode.children) {
+            const child = currentNodes[childId];
+            if (child?.type === "terminal" && child.terminalId === terminalId) {
+              removeChildFromNode(activeProject.rootGroupId, childId);
+              removeNode(childId);
+              break;
+            }
+          }
+        }
+      } else {
+        // Closing a split pane within a tab
+        closeTerminal(terminalId).catch(() => {});
+        disposeTerminalInstance(terminalId);
+        removeTerminalFromLayout(layoutKey, terminalId);
+        removeSession(terminalId);
       }
 
-      // If layout is now empty and no tree children remain, clean up the project
-      const layoutAfter = useLayoutStore.getState().layouts[activeProject.layoutId];
-      if (!layoutAfter) {
-        const updatedNodes = useProjectStore.getState().nodes;
-        const updatedRoot = updatedNodes[activeProject.rootGroupId];
-        if (!updatedRoot?.children || updatedRoot.children.length === 0) {
-          removeNode(activeProject.rootGroupId);
-          removeProject(activeProject.id);
-        }
+      // If no more tabs remain, clean up the project
+      const updatedNodes = useProjectStore.getState().nodes;
+      const updatedRoot = updatedNodes[activeProject.rootGroupId];
+      if (!updatedRoot?.children || updatedRoot.children.length === 0) {
+        removeNode(activeProject.rootGroupId);
+        removeProject(activeProject.id);
       }
     },
-    [activeProject, removeTerminalFromLayout, removeSession, removeChildFromNode, removeNode, removeProject]
+    [activeProject, removeTerminalFromLayout, removeLayout, removeSession, removeChildFromNode, removeNode, removeProject]
   );
 
-  // Compute rootTerminalId from the layout (not the sidebar tree) so the
-  // project view renders even when only split panes exist.
+  // Find the layout key (tab root terminal ID) for the currently active terminal.
   const layouts = useLayoutStore((s) => s.layouts);
-  const rootTerminalId = (() => {
-    if (!activeProject) return null;
-    const layout = layouts[activeProject.layoutId];
-    if (!layout) return null;
-    const ids = findTerminalIds(layout);
-    return ids.length > 0 ? ids[0] : null;
+  const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
+  const activeLayoutKey = (() => {
+    if (!activeProject || !activeTerminalId) return null;
+    return findLayoutKeyForTerminal(layouts, activeTerminalId);
   })();
 
   // Auto-create first project on launch
@@ -405,16 +416,9 @@ export default function App() {
       }
       if (isMeta && e.key === "w") {
         e.preventDefault();
-        if (!activeProject) return;
-        const layout = useLayoutStore.getState().layouts[activeProject.layoutId];
-        if (!layout) return;
-        const layoutTerminals = findTerminalIds(layout);
         const activeTermId = useTerminalStore.getState().activeTerminalId;
-        const termToClose = activeTermId && layoutTerminals.includes(activeTermId)
-          ? activeTermId
-          : layoutTerminals[0];
-        if (termToClose) {
-          handleClosePane(termToClose);
+        if (activeTermId) {
+          handleClosePane(activeTermId);
         }
       }
       // Font size: Cmd+= / Cmd+- / Cmd+0
@@ -429,6 +433,33 @@ export default function App() {
       if (isMeta && e.key === "0") {
         e.preventDefault();
         useFontSizeStore.getState().reset();
+      }
+      // Cycle terminals in sidebar: Cmd+Shift+] (next) / Cmd+Shift+[ (prev)
+      if (isMeta && e.shiftKey && (e.code === "BracketRight" || e.code === "BracketLeft")) {
+        e.preventDefault();
+        const { projects: allProjects, projectOrder, nodes: currentNodes } = useProjectStore.getState();
+        // Build flat list of { terminalId, projectId } across all projects in sidebar order
+        const allTerminals: { terminalId: string; projectId: string }[] = [];
+        for (const projId of projectOrder) {
+          const proj = allProjects[projId];
+          if (!proj) continue;
+          const rootNode = currentNodes[proj.rootGroupId];
+          if (!rootNode?.children) continue;
+          for (const childId of rootNode.children) {
+            const child = currentNodes[childId];
+            if (child?.type === "terminal" && child.terminalId) {
+              allTerminals.push({ terminalId: child.terminalId, projectId: projId });
+            }
+          }
+        }
+        if (allTerminals.length < 2) return;
+        const activeTermId = useTerminalStore.getState().activeTerminalId;
+        const currentIdx = activeTermId ? allTerminals.findIndex((t) => t.terminalId === activeTermId) : -1;
+        const delta = e.code === "BracketRight" ? 1 : -1;
+        const nextIdx = (currentIdx + delta + allTerminals.length) % allTerminals.length;
+        const next = allTerminals[nextIdx];
+        useTerminalStore.getState().setActiveTerminal(next.terminalId);
+        useProjectStore.getState().setActiveProject(next.projectId);
       }
     };
 
@@ -461,10 +492,9 @@ export default function App() {
         onMouseDown={handleSidebarDividerMouseDown}
       />
       <div className="main-content">
-        {activeProject && rootTerminalId ? (
+        {activeProject && activeLayoutKey ? (
           <ProjectView
-            layoutId={activeProject.layoutId}
-            rootTerminalId={rootTerminalId}
+            layoutId={activeLayoutKey}
             onSplitPane={handleSplitPane}
             onClosePane={handleClosePane}
           />

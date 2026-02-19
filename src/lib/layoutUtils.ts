@@ -73,3 +73,15 @@ export function findTerminalIds(root: LayoutNode): string[] {
   if (root.type === "terminal") return [root.terminalId];
   return [...findTerminalIds(root.first), ...findTerminalIds(root.second)];
 }
+
+/** Find the layout key (tab root terminal ID) that contains the given terminal. */
+export function findLayoutKeyForTerminal(
+  layouts: Record<string, LayoutNode>,
+  terminalId: string
+): string | null {
+  if (layouts[terminalId]) return terminalId;
+  for (const [key, layout] of Object.entries(layouts)) {
+    if (findTerminalIds(layout).includes(terminalId)) return key;
+  }
+  return null;
+}

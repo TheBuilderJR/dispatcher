@@ -20,6 +20,7 @@ interface LayoutStore {
   ) => void;
   removeTerminal: (layoutId: string, targetTerminalId: string) => void;
   setRatio: (layoutId: string, splitId: string, ratio: number) => void;
+  removeLayout: (layoutId: string) => void;
   getLayout: (layoutId: string) => LayoutNode | undefined;
 }
 
@@ -64,6 +65,12 @@ export const useLayoutStore = create<LayoutStore>()(
           return {
             layouts: { ...state.layouts, [layoutId]: updateRatio(layout, splitId, ratio) },
           };
+        }),
+
+      removeLayout: (layoutId) =>
+        set((state) => {
+          const { [layoutId]: _, ...rest } = state.layouts;
+          return { layouts: rest };
         }),
 
       getLayout: (layoutId) => get().layouts[layoutId],

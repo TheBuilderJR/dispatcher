@@ -3,7 +3,6 @@ export interface Project {
   name: string;
   cwd: string;
   rootGroupId: string;
-  layoutId: string;
   expanded: boolean;
 }
 

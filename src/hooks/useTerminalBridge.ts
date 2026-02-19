@@ -136,33 +136,44 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
 
     // Attach the persistent element to the current mount point.
     mountPoint.appendChild(inst.element);
-    inst.fitAddon.fit();
-    inst.xterm.focus();
 
     xtermRef.current = inst.xterm;
     fitAddonRef.current = inst.fitAddon;
     searchAddonRef.current = inst.searchAddon;
 
-    // Create the backend PTY exactly once per terminalId.
-    if (!createdPtys.has(terminalId)) {
-      createdPtys.add(terminalId);
+    // Defer fit() to the next animation frame so the browser has laid out the
+    // container and fit() can measure accurate dimensions.  Without this, the
+    // container may report 0/stale size right after appendChild, causing the
+    // PTY to be created with wrong cols/rows — which leads to garbled output
+    // whenever the running program uses cursor positioning (e.g. Claude Code).
+    const rafId = requestAnimationFrame(() => {
+      const i = instances.get(terminalId);
+      if (!i) return;
 
-      const channel = new Channel<TerminalOutputPayload>();
-      channel.onmessage = (msg) => {
-        // Write to the persistent xterm instance (not the ref, which may
-        // be null between unmount/remount).
-        instances.get(msg.terminal_id)?.xterm.write(msg.data);
-      };
+      i.fitAddon.fit();
+      i.xterm.focus();
 
-      const cols = inst.xterm.cols;
-      const rows = inst.xterm.rows;
+      // Create the backend PTY exactly once per terminalId.
+      if (!createdPtys.has(terminalId)) {
+        createdPtys.add(terminalId);
 
-      createPty(terminalId, channel, cwd, cols, rows)
-        .then(() => warmPool(1).catch(() => {}))
-        .catch((err) => {
-          inst!.xterm.write(`\r\nError creating terminal: ${err}\r\n`);
-        });
-    }
+        const channel = new Channel<TerminalOutputPayload>();
+        channel.onmessage = (msg) => {
+          // Write to the persistent xterm instance (not the ref, which may
+          // be null between unmount/remount).
+          instances.get(msg.terminal_id)?.xterm.write(msg.data);
+        };
+
+        const cols = i.xterm.cols;
+        const rows = i.xterm.rows;
+
+        createPty(terminalId, channel, cwd, cols, rows)
+          .then(() => warmPool(1).catch(() => {}))
+          .catch((err) => {
+            i.xterm.write(`\r\nError creating terminal: ${err}\r\n`);
+          });
+      }
+    });
 
     // Forward user input to PTY
     const dataDisposable = inst.xterm.onData((data) => {
@@ -184,6 +195,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
     });
 
     return () => {
+      cancelAnimationFrame(rafId);
       unsubFontSize();
       dataDisposable.dispose();
       resizeDisposable.dispose();

@@ -6,12 +6,11 @@ import { SplitContainer } from "./SplitContainer";
 
 interface ProjectViewProps {
   layoutId: string;
-  rootTerminalId: string;
   onSplitPane: (targetTerminalId: string, direction: "horizontal" | "vertical") => void;
   onClosePane: (terminalId: string) => void;
 }
 
-export function ProjectView({ layoutId, rootTerminalId, onSplitPane, onClosePane }: ProjectViewProps) {
+export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewProps) {
   const layout = useLayoutStore((s) => s.layouts[layoutId]);
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
   const [detailWidth, setDetailWidth] = useState(260);
@@ -47,7 +46,7 @@ export function ProjectView({ layoutId, rootTerminalId, onSplitPane, onClosePane
     );
   }
 
-  const displayTerminalId = activeTerminalId ?? rootTerminalId;
+  const displayTerminalId = activeTerminalId ?? layoutId;
 
   return (
     <div className="project-view">
