@@ -89,6 +89,7 @@ export function TerminalPane({
   return (
     <div
       className={`terminal-pane ${isActive ? "terminal-pane-active" : ""}`}
+      data-terminal-id={terminalId}
       ref={resizeRef}
       onMouseDown={() => setActiveTerminal(terminalId)}
       onContextMenu={handleContextMenu}

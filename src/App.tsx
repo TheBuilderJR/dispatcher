@@ -10,6 +10,7 @@ import { onTerminalExit } from "./lib/terminalEvents";
 import { findTerminalIds, findLayoutKeyForTerminal, findSiblingTerminalId } from "./lib/layoutUtils";
 import { closeTerminal, warmPool, getTerminalCwd, writeTerminal } from "./lib/tauriCommands";
 import { disposeTerminalInstance } from "./hooks/useTerminalBridge";
+import { useFileDrop } from "./hooks/useFileDrop";
 import "./App.css";
 
 function generateId(): string {
@@ -39,6 +40,8 @@ export default function App() {
   const splitTerminal = useLayoutStore((s) => s.splitTerminal);
   const removeTerminalFromLayout = useLayoutStore((s) => s.removeTerminal);
   const removeLayout = useLayoutStore((s) => s.removeLayout);
+
+  useFileDrop();
 
   const activeProject = activeProjectId ? projects[activeProjectId] : null;
 
@@ -128,6 +131,11 @@ export default function App() {
     (projectId: string, terminalName: string) => {
       const project = projects[projectId];
       if (!project) return;
+
+      // Expand the project if it's minimized so the new terminal is visible
+      if (!project.expanded) {
+        useProjectStore.getState().toggleProjectExpanded(projectId);
+      }
 
       const terminalId = generateId();
       const nodeId = generateId();

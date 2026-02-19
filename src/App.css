@@ -549,6 +549,11 @@ html, body, #root {
   border-color: var(--text-muted);
 }
 
+.terminal-pane.terminal-drop-target {
+  border: 1px dashed var(--text-secondary);
+  background: rgba(255, 255, 255, 0.03);
+}
+
 .terminal-container {
   flex: 1;
   overflow: hidden;

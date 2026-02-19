@@ -29,7 +29,7 @@
         "resizable": true,
         "fullscreen": false,
         "theme": "Dark",
-        "dragDropEnabled": false
+        "dragDropEnabled": true
       }
     ],
     "security": {
