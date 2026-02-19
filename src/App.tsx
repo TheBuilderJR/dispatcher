@@ -454,12 +454,21 @@ export default function App() {
         }
         if (allTerminals.length < 2) return;
         const activeTermId = useTerminalStore.getState().activeTerminalId;
-        const currentIdx = activeTermId ? allTerminals.findIndex((t) => t.terminalId === activeTermId) : -1;
+        let currentIdx = activeTermId ? allTerminals.findIndex((t) => t.terminalId === activeTermId) : -1;
+        // If active terminal is a split pane (not a tab root), find its parent tab
+        if (currentIdx === -1 && activeTermId) {
+          const layouts = useLayoutStore.getState().layouts;
+          const parentKey = findLayoutKeyForTerminal(layouts, activeTermId);
+          if (parentKey) {
+            currentIdx = allTerminals.findIndex((t) => t.terminalId === parentKey);
+          }
+        }
         const delta = e.code === "BracketRight" ? 1 : -1;
         const nextIdx = (currentIdx + delta + allTerminals.length) % allTerminals.length;
         const next = allTerminals[nextIdx];
-        useTerminalStore.getState().setActiveTerminal(next.terminalId);
+        // Set project first so intermediate renders keep the sidebar consistent
         useProjectStore.getState().setActiveProject(next.projectId);
+        useTerminalStore.getState().setActiveTerminal(next.terminalId);
       }
     };
 

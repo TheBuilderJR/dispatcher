@@ -126,6 +126,10 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
         if (e.metaKey && ["t", "n", "d", "w", "f", "=", "-", "0"].includes(e.key)) {
           return false;
         }
+        // Cycle terminals: Cmd+Shift+[ / Cmd+Shift+]
+        if (e.metaKey && e.shiftKey && (e.code === "BracketLeft" || e.code === "BracketRight")) {
+          return false;
+        }
 
         return true;
       });
