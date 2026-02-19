@@ -395,95 +395,109 @@ export default function App() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts — use a ref so the listener is registered once and never
+  // torn down/re-added when dependencies like activeProject change.  This
+  // prevents keydown events from being lost during effect re-registration
+  // (particularly noticeable when cycling wraps across projects).
+  const keyDownRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keyDownRef.current = (e: KeyboardEvent) => {
+    if (dialog) return; // Don't handle shortcuts while dialog is open
+    const isMeta = e.metaKey || e.ctrlKey;
+
+    if (isMeta && e.key === "t") {
+      e.preventDefault();
+      handleNewTerminal();
+    }
+    if (isMeta && e.key === "n") {
+      e.preventDefault();
+      handleNewProject();
+    }
+    if (isMeta && !e.shiftKey && e.key === "d") {
+      e.preventDefault();
+      const activeTermId = useTerminalStore.getState().activeTerminalId;
+      if (activeTermId && activeProject) {
+        handleSplitPane(activeTermId, "horizontal");
+      }
+    }
+    if (isMeta && e.shiftKey && e.key === "d") {
+      e.preventDefault();
+      const activeTermId = useTerminalStore.getState().activeTerminalId;
+      if (activeTermId && activeProject) {
+        handleSplitPane(activeTermId, "vertical");
+      }
+    }
+    if (isMeta && e.key === "w") {
+      e.preventDefault();
+      const activeTermId = useTerminalStore.getState().activeTerminalId;
+      if (activeTermId) {
+        handleClosePane(activeTermId);
+      }
+    }
+    // Font size: Cmd+= / Cmd+- / Cmd+0
+    if (isMeta && e.key === "=") {
+      e.preventDefault();
+      useFontSizeStore.getState().increase();
+    }
+    if (isMeta && e.key === "-") {
+      e.preventDefault();
+      useFontSizeStore.getState().decrease();
+    }
+    if (isMeta && e.key === "0") {
+      e.preventDefault();
+      useFontSizeStore.getState().reset();
+    }
+    // Cycle terminals in sidebar: Cmd+Shift+] (next) / Cmd+Shift+[ (prev)
+    if (isMeta && e.shiftKey && (e.code === "BracketRight" || e.code === "BracketLeft")) {
+      e.preventDefault();
+      const { projects: allProjects, projectOrder, nodes: currentNodes } = useProjectStore.getState();
+      // Build flat list of { terminalId, projectId } across all projects in sidebar order
+      const allTerminals: { terminalId: string; projectId: string }[] = [];
+      for (const projId of projectOrder) {
+        const proj = allProjects[projId];
+        if (!proj) continue;
+        const rootNode = currentNodes[proj.rootGroupId];
+        if (!rootNode?.children) continue;
+        for (const childId of rootNode.children) {
+          const child = currentNodes[childId];
+          if (child?.type === "terminal" && child.terminalId) {
+            allTerminals.push({ terminalId: child.terminalId, projectId: projId });
+          }
+        }
+      }
+      if (allTerminals.length < 2) return;
+      const activeTermId = useTerminalStore.getState().activeTerminalId;
+      let currentIdx = activeTermId ? allTerminals.findIndex((t) => t.terminalId === activeTermId) : -1;
+      // If active terminal is a split pane (not a tab root), find its parent tab
+      if (currentIdx === -1 && activeTermId) {
+        const layouts = useLayoutStore.getState().layouts;
+        const parentKey = findLayoutKeyForTerminal(layouts, activeTermId);
+        if (parentKey) {
+          currentIdx = allTerminals.findIndex((t) => t.terminalId === parentKey);
+        }
+      }
+      const forward = e.code === "BracketRight";
+      let nextIdx: number;
+      if (currentIdx === -1) {
+        // Not found — go to first or last depending on direction
+        nextIdx = forward ? 0 : allTerminals.length - 1;
+      } else if (forward) {
+        // At end → jump to first, otherwise next
+        nextIdx = currentIdx >= allTerminals.length - 1 ? 0 : currentIdx + 1;
+      } else {
+        // At start → jump to last, otherwise previous
+        nextIdx = currentIdx <= 0 ? allTerminals.length - 1 : currentIdx - 1;
+      }
+      const next = allTerminals[nextIdx];
+      useProjectStore.getState().setActiveProject(next.projectId);
+      useTerminalStore.getState().setActiveTerminal(next.terminalId);
+    }
+  };
+
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (dialog) return; // Don't handle shortcuts while dialog is open
-      const isMeta = e.metaKey || e.ctrlKey;
-
-      if (isMeta && e.key === "t") {
-        e.preventDefault();
-        handleNewTerminal();
-      }
-      if (isMeta && e.key === "n") {
-        e.preventDefault();
-        handleNewProject();
-      }
-      if (isMeta && !e.shiftKey && e.key === "d") {
-        e.preventDefault();
-        const activeTermId = useTerminalStore.getState().activeTerminalId;
-        if (activeTermId && activeProject) {
-          handleSplitPane(activeTermId, "horizontal");
-        }
-      }
-      if (isMeta && e.shiftKey && e.key === "d") {
-        e.preventDefault();
-        const activeTermId = useTerminalStore.getState().activeTerminalId;
-        if (activeTermId && activeProject) {
-          handleSplitPane(activeTermId, "vertical");
-        }
-      }
-      if (isMeta && e.key === "w") {
-        e.preventDefault();
-        const activeTermId = useTerminalStore.getState().activeTerminalId;
-        if (activeTermId) {
-          handleClosePane(activeTermId);
-        }
-      }
-      // Font size: Cmd+= / Cmd+- / Cmd+0
-      if (isMeta && e.key === "=") {
-        e.preventDefault();
-        useFontSizeStore.getState().increase();
-      }
-      if (isMeta && e.key === "-") {
-        e.preventDefault();
-        useFontSizeStore.getState().decrease();
-      }
-      if (isMeta && e.key === "0") {
-        e.preventDefault();
-        useFontSizeStore.getState().reset();
-      }
-      // Cycle terminals in sidebar: Cmd+Shift+] (next) / Cmd+Shift+[ (prev)
-      if (isMeta && e.shiftKey && (e.code === "BracketRight" || e.code === "BracketLeft")) {
-        e.preventDefault();
-        const { projects: allProjects, projectOrder, nodes: currentNodes } = useProjectStore.getState();
-        // Build flat list of { terminalId, projectId } across all projects in sidebar order
-        const allTerminals: { terminalId: string; projectId: string }[] = [];
-        for (const projId of projectOrder) {
-          const proj = allProjects[projId];
-          if (!proj) continue;
-          const rootNode = currentNodes[proj.rootGroupId];
-          if (!rootNode?.children) continue;
-          for (const childId of rootNode.children) {
-            const child = currentNodes[childId];
-            if (child?.type === "terminal" && child.terminalId) {
-              allTerminals.push({ terminalId: child.terminalId, projectId: projId });
-            }
-          }
-        }
-        if (allTerminals.length < 2) return;
-        const activeTermId = useTerminalStore.getState().activeTerminalId;
-        let currentIdx = activeTermId ? allTerminals.findIndex((t) => t.terminalId === activeTermId) : -1;
-        // If active terminal is a split pane (not a tab root), find its parent tab
-        if (currentIdx === -1 && activeTermId) {
-          const layouts = useLayoutStore.getState().layouts;
-          const parentKey = findLayoutKeyForTerminal(layouts, activeTermId);
-          if (parentKey) {
-            currentIdx = allTerminals.findIndex((t) => t.terminalId === parentKey);
-          }
-        }
-        const delta = e.code === "BracketRight" ? 1 : -1;
-        const nextIdx = (currentIdx + delta + allTerminals.length) % allTerminals.length;
-        const next = allTerminals[nextIdx];
-        // Set project first so intermediate renders keep the sidebar consistent
-        useProjectStore.getState().setActiveProject(next.projectId);
-        useTerminalStore.getState().setActiveTerminal(next.terminalId);
-      }
-    };
-
+    const handleKeyDown = (e: KeyboardEvent) => keyDownRef.current(e);
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [dialog, handleNewTerminal, handleNewProject, handleSplitPane, handleClosePane, activeProject]);
+  }, []);
 
   const handleDialogConfirm = (name: string) => {
     if (dialog?.type === "new-project" || dialog?.type === "new-project-with-terminal") {
