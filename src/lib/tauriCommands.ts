@@ -44,6 +44,10 @@ export async function warmPool(count: number = 3): Promise<void> {
   await invoke("warm_pool", { count });
 }
 
+export async function refreshPool(): Promise<void> {
+  await invoke("refresh_pool");
+}
+
 export async function getTerminalCwd(terminalId: string): Promise<string | null> {
   return await invoke("get_terminal_cwd", { terminalId });
 }

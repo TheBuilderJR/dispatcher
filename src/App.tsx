@@ -8,7 +8,7 @@ import { useTerminalStore } from "./stores/useTerminalStore";
 import { useFontSizeStore } from "./stores/useFontSizeStore";
 import { onTerminalExit } from "./lib/terminalEvents";
 import { findTerminalIds, findLayoutKeyForTerminal, findSiblingTerminalId } from "./lib/layoutUtils";
-import { closeTerminal, warmPool, getTerminalCwd, writeTerminal } from "./lib/tauriCommands";
+import { closeTerminal, warmPool, refreshPool, getTerminalCwd, writeTerminal } from "./lib/tauriCommands";
 import { disposeTerminalInstance } from "./hooks/useTerminalBridge";
 import { useFileDrop } from "./hooks/useFileDrop";
 import "./App.css";
@@ -72,9 +72,12 @@ export default function App() {
     document.body.style.userSelect = "none";
   }, [sidebarWidth]);
 
-  // Pre-spawn PTY pool for instant terminal creation
+  // Pre-spawn PTY pool for instant terminal creation, and refresh
+  // periodically so pooled shells have up-to-date history/env.
   useEffect(() => {
     warmPool(3).catch(() => {});
+    const id = setInterval(() => refreshPool().catch(() => {}), 5 * 60 * 1000);
+    return () => clearInterval(id);
   }, []);
 
   // Listen for terminal exits

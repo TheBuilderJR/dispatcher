@@ -123,6 +123,24 @@ impl PtyManager {
         Ok(())
     }
 
+    /// Drain all pooled PTYs and spawn fresh replacements so that shell
+    /// history, environment variables, etc. are up-to-date.
+    pub fn refresh_pool(&self, app_handle: &AppHandle) -> Result<(), PtyError> {
+        let old: Vec<PoolEntry> = {
+            let mut pool = self.pool.lock().unwrap();
+            pool.drain(..).collect()
+        };
+        // Kill old shell processes.
+        for entry in old {
+            if let Some(mut child) = entry.child.lock().unwrap().take() {
+                let _ = child.kill();
+            }
+            // Dropping master/writer closes the PTY fds; the reader thread
+            // will see EOF and exit on its own.
+        }
+        self.warm_pool(app_handle, MAX_POOL_SIZE)
+    }
+
     fn spawn_to_pool(&self, app_handle: &AppHandle) -> Result<(), PtyError> {
         let pty_system = native_pty_system();
         let pair = pty_system

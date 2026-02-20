@@ -13,6 +13,7 @@ pub fn run() {
             commands::resize_terminal,
             commands::close_terminal,
             commands::warm_pool,
+            commands::refresh_pool,
             commands::get_terminal_cwd,
         ])
         .run(tauri::generate_context!())

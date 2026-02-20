@@ -58,3 +58,11 @@ pub fn warm_pool(
 ) -> Result<(), PtyError> {
     state.warm_pool(&app_handle, count)
 }
+
+#[tauri::command]
+pub fn refresh_pool(
+    app_handle: AppHandle,
+    state: State<'_, PtyManager>,
+) -> Result<(), PtyError> {
+    state.refresh_pool(&app_handle)
+}
