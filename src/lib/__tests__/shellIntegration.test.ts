@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { parseShellIntegration } from "../shellIntegration";
+import { parseShellIntegration, looksLikeShellPrompt } from "../shellIntegration";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 
 describe("parseShellIntegration", () => {
@@ -149,5 +149,65 @@ describe("OSC partial reassembly", () => {
     expect(result2).toBe("");
     expect(useTerminalStore.getState().sessions[TERM_ID].status).toBe("error");
     expect(useTerminalStore.getState().sessions[TERM_ID].exitCode).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// looksLikeShellPrompt — heuristic for detecting remote shell prompts vs
+// authentication prompts (Duo, password, etc.).
+// ---------------------------------------------------------------------------
+
+describe("looksLikeShellPrompt", () => {
+  // Should match: common shell prompts
+  it("detects bash-style prompt ending with $", () => {
+    expect(looksLikeShellPrompt("[bobren@devgpu009 ~]$ ")).toBe(true);
+  });
+
+  it("detects root prompt ending with #", () => {
+    expect(looksLikeShellPrompt("root@host:~# ")).toBe(true);
+  });
+
+  it("detects zsh prompt ending with %", () => {
+    expect(looksLikeShellPrompt("bobren@mac ~ % ")).toBe(true);
+  });
+
+  it("detects continuation prompt ending with >", () => {
+    expect(looksLikeShellPrompt("> ")).toBe(true);
+  });
+
+  it("detects prompt with trailing whitespace", () => {
+    expect(looksLikeShellPrompt("user@host:~$  ")).toBe(true);
+  });
+
+  it("detects prompt with ANSI color codes", () => {
+    expect(
+      looksLikeShellPrompt(
+        "\x1b[01;32muser@host\x1b[00m:\x1b[01;34m~\x1b[00m$ ",
+      ),
+    ).toBe(true);
+  });
+
+  it("detects prompt after multi-line MOTD", () => {
+    expect(
+      looksLikeShellPrompt("Welcome to Ubuntu 22.04\r\nLast login: ...\r\nuser@host:~$ "),
+    ).toBe(true);
+  });
+
+  // Should NOT match: authentication/password prompts
+  it("rejects Duo passcode prompt", () => {
+    expect(looksLikeShellPrompt("Passcode or option (1-2): ")).toBe(false);
+  });
+
+  it("rejects password prompt", () => {
+    expect(looksLikeShellPrompt("Password: ")).toBe(false);
+  });
+
+  it("rejects generic auth prompt", () => {
+    expect(looksLikeShellPrompt("Enter passphrase for key: ")).toBe(false);
+  });
+
+  it("rejects empty / whitespace-only data", () => {
+    expect(looksLikeShellPrompt("")).toBe(false);
+    expect(looksLikeShellPrompt("   \n  \n")).toBe(false);
   });
 });

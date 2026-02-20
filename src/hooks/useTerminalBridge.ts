@@ -13,7 +13,7 @@ import {
 import type { TerminalOutputPayload } from "../lib/tauriCommands";
 import { useFontSizeStore } from "../stores/useFontSizeStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
-import { parseShellIntegration, OSC_RE } from "../lib/shellIntegration";
+import { parseShellIntegration, OSC_RE, looksLikeShellPrompt } from "../lib/shellIntegration";
 
 // ---------------------------------------------------------------------------
 // Shell integration — hook injection + unhooked sub-shell detection
@@ -35,6 +35,8 @@ interface HookState {
   checkTimer: ReturnType<typeof setTimeout> | null;
   /** Timer to verify re-injection succeeded (OSC received after inject). */
   verificationTimer: ReturnType<typeof setTimeout> | null;
+  /** Timer that fires when PTY output has settled (no new data for 1 s). */
+  quietTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const hookStates = new Map<string, HookState>();
@@ -50,6 +52,7 @@ function getHookState(terminalId: string): HookState {
       awaitingOsc: false,
       checkTimer: null,
       verificationTimer: null,
+      quietTimer: null,
     };
     hookStates.set(terminalId, s);
   }
@@ -64,18 +67,24 @@ function parseShellIntegrationWithHookState(terminalId: string, data: string): s
   // First, update hook state for every OSC found in the data.
   const oscPattern = new RegExp(OSC_RE.source, "g");
   let match: RegExpExecArray | null;
+  let oscFound = false;
   while ((match = oscPattern.exec(data)) !== null) {
+    oscFound = true;
     const hs = getHookState(terminalId);
     hs.awaitingOsc = false;
     if (hs.checkTimer) {
       clearTimeout(hs.checkTimer);
       hs.checkTimer = null;
     }
-    // OSC received — hooks are working. Cancel any pending verification
+    // OSC received — hooks are working. Cancel any pending timers
     // and reset re-injection state so future SSH sessions can re-inject.
     if (hs.verificationTimer) {
       clearTimeout(hs.verificationTimer);
       hs.verificationTimer = null;
+    }
+    if (hs.quietTimer) {
+      clearTimeout(hs.quietTimer);
+      hs.quietTimer = null;
     }
     hs.reinjectionAttempted = false;
     hs.reinjectionCount = 0;
@@ -88,6 +97,43 @@ function parseShellIntegrationWithHookState(terminalId: string, data: string): s
       hs.commandRunning = false;
     }
   }
+
+  // Auto-detect unhooked sub-shells from PTY output alone (no Enter needed).
+  // When a command has been running 2+ seconds and we see output WITHOUT any
+  // OSC sequences AND the output looks like a shell prompt (ends with $ # % >),
+  // start a 1.5-second "quiet timer".  When output settles the timer fires and
+  // injects hooks automatically — before the user types anything.
+  // The prompt heuristic avoids false positives during SSH authentication
+  // (e.g. Duo prompts ending with ": ").
+  if (!oscFound) {
+    const hs = getHookState(terminalId);
+    if (
+      hs.commandRunning &&
+      !hs.reinjectionAttempted &&
+      hs.reinjectionCount < 3 &&
+      Date.now() - hs.lastPreexecTime >= 2000 &&
+      looksLikeShellPrompt(data)
+    ) {
+      if (hs.quietTimer) clearTimeout(hs.quietTimer);
+      hs.quietTimer = setTimeout(() => {
+        hs.quietTimer = null;
+        if (hs.commandRunning && !hs.reinjectionAttempted) {
+          hs.reinjectionAttempted = true;
+          hs.reinjectionCount++;
+          injectShellIntegration(terminalId, true);
+
+          if (hs.verificationTimer) clearTimeout(hs.verificationTimer);
+          hs.verificationTimer = setTimeout(() => {
+            hs.verificationTimer = null;
+            if (hs.reinjectionAttempted) {
+              hs.reinjectionAttempted = false;
+            }
+          }, 3000);
+        }
+      }, 1500);
+    }
+  }
+
   // Then delegate to the pure parsing function for store updates + stripping.
   return parseShellIntegration(terminalId, data);
 }
@@ -108,6 +154,12 @@ function checkForUnhookedShell(terminalId: string) {
     return;
   }
 
+  // Cancel quiet-timer — Enter-based detection takes priority.
+  if (hs.quietTimer) {
+    clearTimeout(hs.quietTimer);
+    hs.quietTimer = null;
+  }
+
   hs.awaitingOsc = true;
   if (hs.checkTimer) clearTimeout(hs.checkTimer);
   hs.checkTimer = setTimeout(() => {
@@ -116,7 +168,7 @@ function checkForUnhookedShell(terminalId: string) {
       hs.awaitingOsc = false;
       hs.reinjectionAttempted = true;
       hs.reinjectionCount++;
-      injectShellIntegration(terminalId);
+      injectShellIntegration(terminalId, true);
 
       // Verify re-injection worked: if no OSC arrives within 3 seconds,
       // allow another attempt on the next Enter press (up to the max).
@@ -131,8 +183,23 @@ function checkForUnhookedShell(terminalId: string) {
   }, 500);
 }
 
-/** Inject precmd/preexec shell hooks that emit OSC 7770 sequences. */
-function injectShellIntegration(terminalId: string) {
+/**
+ * Inject precmd/preexec shell hooks that emit OSC 7770 sequences.
+ * @param showMessage — true for re-injection (show status message to user),
+ *   false for initial injection (silent).
+ */
+function injectShellIntegration(terminalId: string, showMessage = false) {
+  // For re-injection, show a status message so the user understands the
+  // brief interruption. Written directly to xterm (not through the PTY) so
+  // it appears immediately.
+  if (showMessage) {
+    instances
+      .get(terminalId)
+      ?.xterm.write(
+        "\r\n\x1b[90m--- Setting up shell integration… ---\x1b[0m\r\n",
+      );
+  }
+
   // Phase 1: Disable terminal echo so the hook script isn't visible.
   // Leading space keeps this out of shell history (HISTCONTROL=ignorespace).
   // The tty driver echoes this one line before the shell executes it;
@@ -140,46 +207,30 @@ function injectShellIntegration(terminalId: string) {
   writeTerminal(terminalId, " stty -echo 2>/dev/null\n").catch(() => {});
 
   // Phase 2: After a brief delay (to let stty take effect), send the hooks.
+  // Everything is on a SINGLE LINE to avoid shell continuation prompts (PS2).
   // If stty hasn't executed yet (e.g. shell still starting), the script will
-  // still be echoed — same as before — and clear will hide it.
+  // still be echoed — but clear will hide it either way.
   setTimeout(() => {
-    // We detect the shell via environment variables and define appropriate hooks.
+    // The hook script is built as a single line to avoid PS2 prompts.
+    // zsh: register via precmd_functions / preexec_functions arrays.
+    // bash: prepend PROMPT_COMMAND + DEBUG trap with a __dp_prompt_shown
+    //   guard to prevent spurious preexec during PROMPT_COMMAND.
     const script = [
-      // --- zsh ---
-      ' if [ -n "$ZSH_VERSION" ]; then',
-      '   __dp_precmd() { printf "\\033]7770;precmd;%d\\007" "$?"; }',
-      '   __dp_preexec() { printf "\\033]7770;preexec\\007"; }',
-      "   precmd_functions+=(__dp_precmd)",
-      "   preexec_functions+=(__dp_preexec)",
-      // --- bash ---
-      // The DEBUG trap fires before every simple command AND before the first
-      // command in a shell function. Without a guard it emits a spurious preexec
-      // during PROMPT_COMMAND, leaving the status stuck on "running".
-      // __dp_prompt_shown=1 is set by precmd after the prompt is ready;
-      // preexec only emits when that flag is set and immediately clears it.
-      // Both functions save/restore $? so the exit code propagates correctly.
-      ' elif [ -n "$BASH_VERSION" ]; then',
-      "   __dp_precmd() {",
-      "     local ec=$?",
-      '     printf "\\033]7770;precmd;%d\\007" "$ec"',
-      "     return $ec",
-      "   }",
-      "   __dp_preexec() {",
-      "     local ec=$?",
-      '     if [ "$__dp_prompt_shown" = 1 ]; then',
-      "       __dp_prompt_shown=0",
-      '       printf "\\033]7770;preexec\\007"',
-      "     fi",
-      "     return $ec",
-      "   }",
-      '   PROMPT_COMMAND="__dp_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};__dp_prompt_shown=1"',
-      "   trap '__dp_preexec' DEBUG",
-      " fi",
-      " stty echo 2>/dev/null; clear",
-      "",
-    ].join("\n");
+      'if [ -n "$ZSH_VERSION" ]; then',
+      '__dp_precmd() { printf "\\033]7770;precmd;%d\\007" "$?"; };',
+      '__dp_preexec() { printf "\\033]7770;preexec\\007"; };',
+      "precmd_functions+=(__dp_precmd);",
+      "preexec_functions+=(__dp_preexec);",
+      'elif [ -n "$BASH_VERSION" ]; then',
+      '__dp_precmd() { local ec=$?; printf "\\033]7770;precmd;%d\\007" "$ec"; return $ec; };',
+      '__dp_preexec() { local ec=$?; if [ "$__dp_prompt_shown" = 1 ]; then __dp_prompt_shown=0; printf "\\033]7770;preexec\\007"; fi; return $ec; };',
+      'PROMPT_COMMAND="__dp_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};__dp_prompt_shown=1";',
+      "trap '__dp_preexec' DEBUG;",
+      "fi;",
+      "stty echo 2>/dev/null; clear",
+    ].join(" ");
 
-    writeTerminal(terminalId, script).catch(() => {});
+    writeTerminal(terminalId, ` ${script}\n`).catch(() => {});
   }, 100);
 }
 
@@ -265,6 +316,7 @@ export function disposeTerminalInstance(terminalId: string) {
   const hs = hookStates.get(terminalId);
   if (hs?.checkTimer) clearTimeout(hs.checkTimer);
   if (hs?.verificationTimer) clearTimeout(hs.verificationTimer);
+  if (hs?.quietTimer) clearTimeout(hs.quietTimer);
   hookStates.delete(terminalId);
   oscPartials.delete(terminalId);
 
