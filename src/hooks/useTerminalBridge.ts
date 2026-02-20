@@ -13,7 +13,7 @@ import {
 import type { TerminalOutputPayload } from "../lib/tauriCommands";
 import { useFontSizeStore } from "../stores/useFontSizeStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
-import { parseShellIntegration, OSC_RE, looksLikeShellPrompt } from "../lib/shellIntegration";
+import { parseShellIntegration, OSC_RE, looksLikeShellPrompt, isRemoteShellCommand } from "../lib/shellIntegration";
 
 // ---------------------------------------------------------------------------
 // Shell integration — hook injection + unhooked sub-shell detection
@@ -37,6 +37,10 @@ interface HookState {
   verificationTimer: ReturnType<typeof setTimeout> | null;
   /** Timer that fires when PTY output has settled (no new data for 1 s). */
   quietTimer: ReturnType<typeof setTimeout> | null;
+  /** Accumulates user keystrokes between Enter presses. */
+  inputBuffer: string;
+  /** The command line captured when the user last pressed Enter. */
+  lastCommand: string;
 }
 
 const hookStates = new Map<string, HookState>();
@@ -53,6 +57,8 @@ function getHookState(terminalId: string): HookState {
       checkTimer: null,
       verificationTimer: null,
       quietTimer: null,
+      inputBuffer: "",
+      lastCommand: "",
     };
     hookStates.set(terminalId, s);
   }
@@ -112,6 +118,7 @@ function parseShellIntegrationWithHookState(terminalId: string, data: string): s
       !hs.reinjectionAttempted &&
       hs.reinjectionCount < 3 &&
       Date.now() - hs.lastPreexecTime >= 2000 &&
+      isRemoteShellCommand(hs.lastCommand) &&
       looksLikeShellPrompt(data)
     ) {
       if (hs.quietTimer) clearTimeout(hs.quietTimer);
@@ -149,7 +156,8 @@ function checkForUnhookedShell(terminalId: string) {
     !hs.commandRunning ||
     hs.reinjectionAttempted ||
     hs.reinjectionCount >= 3 ||
-    Date.now() - hs.lastPreexecTime < 2000
+    Date.now() - hs.lastPreexecTime < 2000 ||
+    !isRemoteShellCommand(hs.lastCommand)
   ) {
     return;
   }
@@ -480,12 +488,25 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       }
     });
 
-    // Forward user input to PTY
+    // Forward user input to PTY and track command lines for SSH detection.
     const dataDisposable = inst.xterm.onData((data) => {
       writeTerminal(terminalId, data).catch(() => {});
-      // Detect Enter — may trigger re-injection into unhooked sub-shells.
+
+      const hs = getHookState(terminalId);
       if (data.includes("\r") || data.includes("\n")) {
+        // Enter pressed — snapshot buffer as last command, then reset.
+        hs.lastCommand = hs.inputBuffer.trim();
+        hs.inputBuffer = "";
         checkForUnhookedShell(terminalId);
+      } else if (data === "\x7f" || data === "\b") {
+        // Backspace — remove last character.
+        hs.inputBuffer = hs.inputBuffer.slice(0, -1);
+      } else if (data === "\x03" || data === "\x04") {
+        // Ctrl+C / Ctrl+D — reset buffer.
+        hs.inputBuffer = "";
+      } else if (data.length === 1 && data >= " ") {
+        // Printable character.
+        hs.inputBuffer += data;
       }
     });
 

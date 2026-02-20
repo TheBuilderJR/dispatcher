@@ -17,6 +17,18 @@ export function looksLikeShellPrompt(data: string): boolean {
   return /[#$%>]\s*$/.test(lines[lines.length - 1]);
 }
 
+const REMOTE_SHELL_RE = /^\s*(ssh|et|mosh)\b/;
+
+/**
+ * Does the given command line look like a remote shell invocation
+ * (ssh, et, mosh)?  Used to gate hook re-injection so it only fires
+ * for remote sessions, not for arbitrary long-running commands like
+ * Claude Code.
+ */
+export function isRemoteShellCommand(cmd: string): boolean {
+  return REMOTE_SHELL_RE.test(cmd);
+}
+
 /** Strip OSC 7770 sequences from PTY output and update terminal status. */
 export function parseShellIntegration(terminalId: string, data: string): string {
   return data.replace(OSC_RE, (_, payload: string) => {

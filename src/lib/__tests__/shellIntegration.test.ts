@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { parseShellIntegration, looksLikeShellPrompt } from "../shellIntegration";
+import { parseShellIntegration, looksLikeShellPrompt, isRemoteShellCommand } from "../shellIntegration";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 
 describe("parseShellIntegration", () => {
@@ -209,5 +209,57 @@ describe("looksLikeShellPrompt", () => {
   it("rejects empty / whitespace-only data", () => {
     expect(looksLikeShellPrompt("")).toBe(false);
     expect(looksLikeShellPrompt("   \n  \n")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isRemoteShellCommand — gate hook re-injection on SSH/et/mosh commands only.
+// ---------------------------------------------------------------------------
+
+describe("isRemoteShellCommand", () => {
+  // Should match
+  it("detects ssh", () => {
+    expect(isRemoteShellCommand("ssh host")).toBe(true);
+  });
+
+  it("detects ssh with user@host", () => {
+    expect(isRemoteShellCommand("ssh user@host")).toBe(true);
+  });
+
+  it("detects ssh with flags", () => {
+    expect(isRemoteShellCommand("ssh -p 2222 user@host")).toBe(true);
+  });
+
+  it("detects et (Eternal Terminal)", () => {
+    expect(isRemoteShellCommand("et host")).toBe(true);
+  });
+
+  it("detects mosh", () => {
+    expect(isRemoteShellCommand("mosh user@host")).toBe(true);
+  });
+
+  it("detects with leading whitespace", () => {
+    expect(isRemoteShellCommand("  ssh host")).toBe(true);
+  });
+
+  // Should NOT match
+  it("rejects claude", () => {
+    expect(isRemoteShellCommand("claude")).toBe(false);
+  });
+
+  it("rejects vim", () => {
+    expect(isRemoteShellCommand("vim file.txt")).toBe(false);
+  });
+
+  it("rejects ls", () => {
+    expect(isRemoteShellCommand("ls -la")).toBe(false);
+  });
+
+  it("rejects sshfs (not ssh itself)", () => {
+    expect(isRemoteShellCommand("sshfs host:/path /mnt")).toBe(false);
+  });
+
+  it("rejects empty string", () => {
+    expect(isRemoteShellCommand("")).toBe(false);
   });
 });
