@@ -108,32 +108,101 @@ describe("Cross-store integration", () => {
     expect(useProjectStore.getState().nodes[nodeIds[0]]).toBeDefined();
   });
 
-  it("close tab root: closes split panes first, then tab", () => {
-    const { projectId, rootGroupId, tabRootId, splitTerminalId, nodeIds } =
+  it("close tab root with splits: re-keys layout, preserves remaining panes", () => {
+    const { rootGroupId, tabRootId, splitTerminalId, nodeIds } =
       createTestProjectWithSplit();
 
-    // Simulate handleClosePane for a tab root
+    // Simulate handleClosePane for the tab root when splits exist.
+    // The tab root is also the layout key — closing it must NOT destroy the tab.
     const allLayouts = useLayoutStore.getState().layouts;
-    const layout = allLayouts[tabRootId];
-    const allTerminals = findTerminalIds(layout);
-    const splitPanes = allTerminals.filter((id) => id !== tabRootId);
+    const layoutKey = tabRootId;
+    const layout = allLayouts[layoutKey];
+    const isSolePane = layout.type === "terminal";
+    expect(isSolePane).toBe(false); // has splits
 
-    // Close split panes first
-    for (const id of splitPanes) {
-      useTerminalStore.getState().removeSession(id);
+    const sibling = findSiblingTerminalId(layout, tabRootId);
+    expect(sibling).toBe(splitTerminalId);
+
+    // Remove from layout tree
+    useLayoutStore.getState().removeTerminal(layoutKey, tabRootId);
+
+    // Re-key: the old key still exists (removeTerminal keeps it), move to new key
+    const remaining = useLayoutStore.getState().layouts[layoutKey];
+    expect(remaining).toBeDefined();
+    const newKey = findTerminalIds(remaining)[0];
+    useLayoutStore.setState((state) => {
+      const { [layoutKey]: layoutNode, ...rest } = state.layouts;
+      return { layouts: { ...rest, [newKey]: layoutNode } };
+    });
+
+    // Update tree node's terminalId
+    useProjectStore.setState((state) => ({
+      nodes: {
+        ...state.nodes,
+        [nodeIds[0]]: { ...state.nodes[nodeIds[0]], terminalId: newKey },
+      },
+    }));
+
+    if (sibling && useTerminalStore.getState().activeTerminalId === tabRootId) {
+      useTerminalStore.getState().setActiveTerminal(sibling);
     }
-    // Then close tab root
     useTerminalStore.getState().removeSession(tabRootId);
-    useLayoutStore.getState().removeLayout(tabRootId);
 
-    // Remove tree node
-    useProjectStore.getState().removeChildFromNode(rootGroupId, nodeIds[0]);
-    useProjectStore.getState().removeNode(nodeIds[0]);
-
-    // All cleaned up
-    expect(useTerminalStore.getState().sessions[tabRootId]).toBeUndefined();
-    expect(useTerminalStore.getState().sessions[splitTerminalId]).toBeUndefined();
+    // Remaining split pane survives
+    expect(useTerminalStore.getState().sessions[splitTerminalId]).toBeDefined();
+    // Layout re-keyed under the surviving terminal
+    expect(useLayoutStore.getState().layouts[newKey]).toBeDefined();
     expect(useLayoutStore.getState().layouts[tabRootId]).toBeUndefined();
+    // Tree node updated to new key
+    expect(useProjectStore.getState().nodes[nodeIds[0]].terminalId).toBe(newKey);
+  });
+
+  it("close tab root with 3 panes: two remaining panes survive", () => {
+    // Create a project with tab root + 2 split panes
+    const { rootGroupId, tabRootId, nodeIds } = createTestProjectWithSplit();
+    const splitTerm2 = "split-term-2";
+    useTerminalStore.getState().addSession(splitTerm2);
+    useLayoutStore.getState().splitTerminal(
+      tabRootId,
+      createTestProjectWithSplit.name ? tabRootId : tabRootId, // split the tab root again
+      splitTerm2,
+      "vertical"
+    );
+
+    // Verify 3 terminals in layout
+    const layout = useLayoutStore.getState().layouts[tabRootId];
+    const allIds = findTerminalIds(layout);
+    expect(allIds).toHaveLength(3);
+
+    // Close the tab root pane
+    const sibling = findSiblingTerminalId(layout, tabRootId);
+    useLayoutStore.getState().removeTerminal(tabRootId, tabRootId);
+
+    // Re-key
+    const remaining = useLayoutStore.getState().layouts[tabRootId];
+    const newKey = findTerminalIds(remaining)[0];
+    useLayoutStore.setState((state) => {
+      const { [tabRootId]: layoutNode, ...rest } = state.layouts;
+      return { layouts: { ...rest, [newKey]: layoutNode } };
+    });
+    useProjectStore.setState((state) => ({
+      nodes: {
+        ...state.nodes,
+        [nodeIds[0]]: { ...state.nodes[nodeIds[0]], terminalId: newKey },
+      },
+    }));
+
+    if (sibling && useTerminalStore.getState().activeTerminalId === tabRootId) {
+      useTerminalStore.getState().setActiveTerminal(sibling);
+    }
+    useTerminalStore.getState().removeSession(tabRootId);
+
+    // Two panes remain in the re-keyed layout
+    const newLayout = useLayoutStore.getState().layouts[newKey];
+    expect(newLayout).toBeDefined();
+    const remainingIds = findTerminalIds(newLayout);
+    expect(remainingIds).toHaveLength(2);
+    expect(remainingIds).not.toContain(tabRootId);
   });
 
   it("close last terminal auto-deletes project", () => {

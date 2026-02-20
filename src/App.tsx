@@ -330,21 +330,11 @@ export default function App() {
       if (!layoutKey) return;
 
       const isTabRoot = layoutKey === terminalId;
+      const layout = allLayouts[layoutKey];
+      const isSolePane = !layout || layout.type === "terminal";
 
-      if (isTabRoot) {
-        // Closing a tab root: close the entire tab (including split panes)
-        const layout = allLayouts[layoutKey];
-        if (layout) {
-          const allTerminals = findTerminalIds(layout);
-          // Close split panes first, then the tab root, so activeTerminalId
-          // falls through to another tab (not an about-to-be-closed split pane).
-          const splitPanes = allTerminals.filter((id) => id !== terminalId);
-          for (const id of splitPanes) {
-            closeTerminal(id).catch(() => {});
-            disposeTerminalInstance(id);
-            removeSession(id);
-          }
-        }
+      if (isTabRoot && isSolePane) {
+        // Closing the only pane in a tab: close the entire tab.
         closeTerminal(terminalId).catch(() => {});
         disposeTerminalInstance(terminalId);
         removeSession(terminalId);
@@ -364,15 +354,45 @@ export default function App() {
           }
         }
       } else {
-        // Closing a split pane within a tab.
+        // Closing one pane within a split layout.
         // Find the sibling BEFORE mutating the layout so focus stays in this tab
         // instead of jumping to a terminal in a different tab.
-        const layout = allLayouts[layoutKey];
         const sibling = layout ? findSiblingTerminalId(layout, terminalId) : null;
 
         closeTerminal(terminalId).catch(() => {});
         disposeTerminalInstance(terminalId);
         removeTerminalFromLayout(layoutKey, terminalId);
+
+        // If the closed pane was the tab root, re-key the layout under a
+        // surviving terminal and update the tree node to match.
+        if (isTabRoot) {
+          const remaining = useLayoutStore.getState().layouts[layoutKey];
+          if (remaining) {
+            const newKey = findTerminalIds(remaining)[0];
+            // Re-key: remove old entry, insert under new key
+            useLayoutStore.setState((state) => {
+              const { [layoutKey]: layoutNode, ...rest } = state.layouts;
+              return { layouts: { ...rest, [newKey]: layoutNode } };
+            });
+            // Update the tree node's terminalId to the new layout key
+            const currentNodes = useProjectStore.getState().nodes;
+            const rootNode = currentNodes[activeProject.rootGroupId];
+            if (rootNode?.children) {
+              for (const childId of rootNode.children) {
+                const child = currentNodes[childId];
+                if (child?.type === "terminal" && child.terminalId === terminalId) {
+                  useProjectStore.setState((state) => ({
+                    nodes: {
+                      ...state.nodes,
+                      [childId]: { ...state.nodes[childId], terminalId: newKey },
+                    },
+                  }));
+                  break;
+                }
+              }
+            }
+          }
+        }
 
         if (sibling && useTerminalStore.getState().activeTerminalId === terminalId) {
           useTerminalStore.getState().setActiveTerminal(sibling);
@@ -408,6 +428,24 @@ export default function App() {
 
   // Keyboard shortcuts — use a ref so the listener is registered once and never
   // torn down/re-added when dependencies like activeProject change.  This
+  // Track last-focused pane per tab so we can restore focus when cycling back.
+  const lastFocusedPane = useRef(new Map<string, string>());
+  useEffect(() => {
+    return useTerminalStore.subscribe((state) => {
+      const activeId = state.activeTerminalId;
+      if (!activeId) return;
+      const layouts = useLayoutStore.getState().layouts;
+      // If activeId is inside a split layout, record it under the tab root.
+      const tabRoot = findLayoutKeyForTerminal(layouts, activeId);
+      if (tabRoot) {
+        lastFocusedPane.current.set(tabRoot, activeId);
+      } else if (layouts[activeId]) {
+        // activeId IS the tab root itself (single pane or root pane focused).
+        lastFocusedPane.current.set(activeId, activeId);
+      }
+    });
+  }, []);
+
   // prevents keydown events from being lost during effect re-registration
   // (particularly noticeable when cycling wraps across projects).
   const keyDownRef = useRef<(e: KeyboardEvent) => void>(() => {});
@@ -499,7 +537,9 @@ export default function App() {
       }
       const next = allTerminals[nextIdx];
       useProjectStore.getState().setActiveProject(next.projectId);
-      useTerminalStore.getState().setActiveTerminal(next.terminalId);
+      // Restore the pane that was last focused in this tab, or fall back to the tab root.
+      const restored = lastFocusedPane.current.get(next.terminalId);
+      useTerminalStore.getState().setActiveTerminal(restored || next.terminalId);
     }
   };
 

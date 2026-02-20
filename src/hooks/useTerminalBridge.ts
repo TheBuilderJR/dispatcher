@@ -351,7 +351,12 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       if (!i) return;
 
       i.fitAddon.fit();
-      i.xterm.focus();
+      // Only steal DOM focus if this terminal is the active one.
+      // Without this guard, every pane calls focus() on mount and
+      // the last-rendered pane wins — breaking focus restoration.
+      if (useTerminalStore.getState().activeTerminalId === terminalId) {
+        i.xterm.focus();
+      }
 
       // Create the backend PTY exactly once per terminalId.
       if (!createdPtys.has(terminalId)) {
