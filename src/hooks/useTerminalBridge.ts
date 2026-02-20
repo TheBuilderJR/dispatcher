@@ -183,55 +183,48 @@ function checkForUnhookedShell(terminalId: string) {
   }, 500);
 }
 
+// The hook script as a single line (no PS2 continuation prompts).
+// zsh: register via precmd_functions / preexec_functions arrays.
+// bash: prepend PROMPT_COMMAND + DEBUG trap with a __dp_prompt_shown
+//   guard to prevent spurious preexec during PROMPT_COMMAND.
+const HOOK_SCRIPT = [
+  'if [ -n "$ZSH_VERSION" ]; then',
+  '__dp_precmd() { printf "\\033]7770;precmd;%d\\007" "$?"; };',
+  '__dp_preexec() { printf "\\033]7770;preexec\\007"; };',
+  "precmd_functions+=(__dp_precmd);",
+  "preexec_functions+=(__dp_preexec);",
+  'elif [ -n "$BASH_VERSION" ]; then',
+  '__dp_precmd() { local ec=$?; printf "\\033]7770;precmd;%d\\007" "$ec"; return $ec; };',
+  '__dp_preexec() { local ec=$?; if [ "$__dp_prompt_shown" = 1 ]; then __dp_prompt_shown=0; printf "\\033]7770;preexec\\007"; fi; return $ec; };',
+  'PROMPT_COMMAND="__dp_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};__dp_prompt_shown=1";',
+  "trap '__dp_preexec' DEBUG;",
+  "fi",
+].join(" ");
+
 /**
  * Inject precmd/preexec shell hooks that emit OSC 7770 sequences.
- * @param showMessage — true for re-injection (show status message to user),
- *   false for initial injection (silent).
+ * @param showMessage — true for re-injection (echo a visible message,
+ *   don't clear the screen), false for initial injection (silent + clear).
  */
 function injectShellIntegration(terminalId: string, showMessage = false) {
-  // For re-injection, show a status message so the user understands the
-  // brief interruption. Written directly to xterm (not through the PTY) so
-  // it appears immediately.
   if (showMessage) {
-    instances
-      .get(terminalId)
-      ?.xterm.write(
-        "\r\n\x1b[90m--- Setting up shell integration… ---\x1b[0m\r\n",
-      );
+    // Re-injection (SSH / nested shell): be transparent — show a message,
+    // install hooks, and leave the terminal output untouched.
+    // Leading space keeps it out of shell history.
+    writeTerminal(
+      terminalId,
+      ` echo '--- Setting up Dispatcher hooks ---'; ${HOOK_SCRIPT}\n`,
+    ).catch(() => {});
+  } else {
+    // Initial injection: suppress echo and clear for a clean slate.
+    writeTerminal(terminalId, " stty -echo 2>/dev/null\n").catch(() => {});
+    setTimeout(() => {
+      writeTerminal(
+        terminalId,
+        ` ${HOOK_SCRIPT}; stty echo 2>/dev/null; clear\n`,
+      ).catch(() => {});
+    }, 100);
   }
-
-  // Phase 1: Disable terminal echo so the hook script isn't visible.
-  // Leading space keeps this out of shell history (HISTCONTROL=ignorespace).
-  // The tty driver echoes this one line before the shell executes it;
-  // subsequent lines won't be echoed once stty takes effect.
-  writeTerminal(terminalId, " stty -echo 2>/dev/null\n").catch(() => {});
-
-  // Phase 2: After a brief delay (to let stty take effect), send the hooks.
-  // Everything is on a SINGLE LINE to avoid shell continuation prompts (PS2).
-  // If stty hasn't executed yet (e.g. shell still starting), the script will
-  // still be echoed — but clear will hide it either way.
-  setTimeout(() => {
-    // The hook script is built as a single line to avoid PS2 prompts.
-    // zsh: register via precmd_functions / preexec_functions arrays.
-    // bash: prepend PROMPT_COMMAND + DEBUG trap with a __dp_prompt_shown
-    //   guard to prevent spurious preexec during PROMPT_COMMAND.
-    const script = [
-      'if [ -n "$ZSH_VERSION" ]; then',
-      '__dp_precmd() { printf "\\033]7770;precmd;%d\\007" "$?"; };',
-      '__dp_preexec() { printf "\\033]7770;preexec\\007"; };',
-      "precmd_functions+=(__dp_precmd);",
-      "preexec_functions+=(__dp_preexec);",
-      'elif [ -n "$BASH_VERSION" ]; then',
-      '__dp_precmd() { local ec=$?; printf "\\033]7770;precmd;%d\\007" "$ec"; return $ec; };',
-      '__dp_preexec() { local ec=$?; if [ "$__dp_prompt_shown" = 1 ]; then __dp_prompt_shown=0; printf "\\033]7770;preexec\\007"; fi; return $ec; };',
-      'PROMPT_COMMAND="__dp_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};__dp_prompt_shown=1";',
-      "trap '__dp_preexec' DEBUG;",
-      "fi;",
-      "stty echo 2>/dev/null; clear",
-    ].join(" ");
-
-    writeTerminal(terminalId, ` ${script}\n`).catch(() => {});
-  }, 100);
 }
 
 // Per-terminal buffer for partial OSC 7770 sequences split across PTY chunks
