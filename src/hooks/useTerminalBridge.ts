@@ -27,10 +27,14 @@ interface HookState {
   lastPreexecTime: number;
   /** Whether we already attempted re-injection during the current command. */
   reinjectionAttempted: boolean;
+  /** Total re-injection attempts since the last successful OSC reception. */
+  reinjectionCount: number;
   /** Whether we're waiting for an OSC after the user pressed Enter. */
   awaitingOsc: boolean;
   /** Timer for the OSC wait. */
   checkTimer: ReturnType<typeof setTimeout> | null;
+  /** Timer to verify re-injection succeeded (OSC received after inject). */
+  verificationTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const hookStates = new Map<string, HookState>();
@@ -42,8 +46,10 @@ function getHookState(terminalId: string): HookState {
       commandRunning: false,
       lastPreexecTime: 0,
       reinjectionAttempted: false,
+      reinjectionCount: 0,
       awaitingOsc: false,
       checkTimer: null,
+      verificationTimer: null,
     };
     hookStates.set(terminalId, s);
   }
@@ -65,11 +71,19 @@ function parseShellIntegrationWithHookState(terminalId: string, data: string): s
       clearTimeout(hs.checkTimer);
       hs.checkTimer = null;
     }
+    // OSC received — hooks are working. Cancel any pending verification
+    // and reset re-injection state so future SSH sessions can re-inject.
+    if (hs.verificationTimer) {
+      clearTimeout(hs.verificationTimer);
+      hs.verificationTimer = null;
+    }
+    hs.reinjectionAttempted = false;
+    hs.reinjectionCount = 0;
+
     const payload = match[1];
     if (payload === "preexec") {
       hs.commandRunning = true;
       hs.lastPreexecTime = Date.now();
-      hs.reinjectionAttempted = false;
     } else if (payload.startsWith("precmd;")) {
       hs.commandRunning = false;
     }
@@ -88,6 +102,7 @@ function checkForUnhookedShell(terminalId: string) {
   if (
     !hs.commandRunning ||
     hs.reinjectionAttempted ||
+    hs.reinjectionCount >= 3 ||
     Date.now() - hs.lastPreexecTime < 2000
   ) {
     return;
@@ -100,51 +115,72 @@ function checkForUnhookedShell(terminalId: string) {
     if (hs.awaitingOsc) {
       hs.awaitingOsc = false;
       hs.reinjectionAttempted = true;
+      hs.reinjectionCount++;
       injectShellIntegration(terminalId);
+
+      // Verify re-injection worked: if no OSC arrives within 3 seconds,
+      // allow another attempt on the next Enter press (up to the max).
+      if (hs.verificationTimer) clearTimeout(hs.verificationTimer);
+      hs.verificationTimer = setTimeout(() => {
+        hs.verificationTimer = null;
+        if (hs.reinjectionAttempted) {
+          hs.reinjectionAttempted = false;
+        }
+      }, 3000);
     }
   }, 500);
 }
 
 /** Inject precmd/preexec shell hooks that emit OSC 7770 sequences. */
 function injectShellIntegration(terminalId: string) {
-  // Leading space keeps commands out of shell history (HISTCONTROL=ignorespace).
-  // We detect the shell via environment variables and define appropriate hooks.
-  const script = [
-    // --- zsh ---
-    ' if [ -n "$ZSH_VERSION" ]; then',
-    '   __dp_precmd() { printf "\\033]7770;precmd;%d\\007" "$?"; }',
-    '   __dp_preexec() { printf "\\033]7770;preexec\\007"; }',
-    "   precmd_functions+=(__dp_precmd)",
-    "   preexec_functions+=(__dp_preexec)",
-    // --- bash ---
-    // The DEBUG trap fires before every simple command AND before the first
-    // command in a shell function. Without a guard it emits a spurious preexec
-    // during PROMPT_COMMAND, leaving the status stuck on "running".
-    // __dp_prompt_shown=1 is set by precmd after the prompt is ready;
-    // preexec only emits when that flag is set and immediately clears it.
-    // Both functions save/restore $? so the exit code propagates correctly.
-    ' elif [ -n "$BASH_VERSION" ]; then',
-    "   __dp_precmd() {",
-    "     local ec=$?",
-    '     printf "\\033]7770;precmd;%d\\007" "$ec"',
-    "     return $ec",
-    "   }",
-    "   __dp_preexec() {",
-    "     local ec=$?",
-    '     if [ "$__dp_prompt_shown" = 1 ]; then',
-    "       __dp_prompt_shown=0",
-    '       printf "\\033]7770;preexec\\007"',
-    "     fi",
-    "     return $ec",
-    "   }",
-    '   PROMPT_COMMAND="__dp_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};__dp_prompt_shown=1"',
-    "   trap '__dp_preexec' DEBUG",
-    " fi",
-    " clear",
-    "",
-  ].join("\n");
+  // Phase 1: Disable terminal echo so the hook script isn't visible.
+  // Leading space keeps this out of shell history (HISTCONTROL=ignorespace).
+  // The tty driver echoes this one line before the shell executes it;
+  // subsequent lines won't be echoed once stty takes effect.
+  writeTerminal(terminalId, " stty -echo 2>/dev/null\n").catch(() => {});
 
-  writeTerminal(terminalId, script).catch(() => {});
+  // Phase 2: After a brief delay (to let stty take effect), send the hooks.
+  // If stty hasn't executed yet (e.g. shell still starting), the script will
+  // still be echoed — same as before — and clear will hide it.
+  setTimeout(() => {
+    // We detect the shell via environment variables and define appropriate hooks.
+    const script = [
+      // --- zsh ---
+      ' if [ -n "$ZSH_VERSION" ]; then',
+      '   __dp_precmd() { printf "\\033]7770;precmd;%d\\007" "$?"; }',
+      '   __dp_preexec() { printf "\\033]7770;preexec\\007"; }',
+      "   precmd_functions+=(__dp_precmd)",
+      "   preexec_functions+=(__dp_preexec)",
+      // --- bash ---
+      // The DEBUG trap fires before every simple command AND before the first
+      // command in a shell function. Without a guard it emits a spurious preexec
+      // during PROMPT_COMMAND, leaving the status stuck on "running".
+      // __dp_prompt_shown=1 is set by precmd after the prompt is ready;
+      // preexec only emits when that flag is set and immediately clears it.
+      // Both functions save/restore $? so the exit code propagates correctly.
+      ' elif [ -n "$BASH_VERSION" ]; then',
+      "   __dp_precmd() {",
+      "     local ec=$?",
+      '     printf "\\033]7770;precmd;%d\\007" "$ec"',
+      "     return $ec",
+      "   }",
+      "   __dp_preexec() {",
+      "     local ec=$?",
+      '     if [ "$__dp_prompt_shown" = 1 ]; then',
+      "       __dp_prompt_shown=0",
+      '       printf "\\033]7770;preexec\\007"',
+      "     fi",
+      "     return $ec",
+      "   }",
+      '   PROMPT_COMMAND="__dp_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};__dp_prompt_shown=1"',
+      "   trap '__dp_preexec' DEBUG",
+      " fi",
+      " stty echo 2>/dev/null; clear",
+      "",
+    ].join("\n");
+
+    writeTerminal(terminalId, script).catch(() => {});
+  }, 100);
 }
 
 // Per-terminal buffer for partial OSC 7770 sequences split across PTY chunks
@@ -228,6 +264,7 @@ function loadWebGLAddon(xterm: Terminal) {
 export function disposeTerminalInstance(terminalId: string) {
   const hs = hookStates.get(terminalId);
   if (hs?.checkTimer) clearTimeout(hs.checkTimer);
+  if (hs?.verificationTimer) clearTimeout(hs.verificationTimer);
   hookStates.delete(terminalId);
   oscPartials.delete(terminalId);
 
