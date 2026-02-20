@@ -6,9 +6,7 @@ describe("useTerminalStore", () => {
     it("creates with correct defaults", () => {
       useTerminalStore.getState().addSession("t1", "My Term");
       const session = useTerminalStore.getState().sessions["t1"];
-      expect(session.status).toBe("done");
       expect(session.notes).toBe("");
-      expect(session.exitCode).toBeNull();
       expect(session.title).toBe("My Term");
     });
 
@@ -22,33 +20,6 @@ describe("useTerminalStore", () => {
       useTerminalStore.getState().addSession("t1", "First");
       useTerminalStore.getState().addSession("t2", "Second");
       expect(useTerminalStore.getState().activeTerminalId).toBe("t2");
-    });
-  });
-
-  describe("updateStatus", () => {
-    it("running → done with exit code 0", () => {
-      useTerminalStore.getState().addSession("t1");
-      useTerminalStore.getState().updateStatus("t1", "running");
-      expect(useTerminalStore.getState().sessions["t1"].status).toBe("running");
-      useTerminalStore.getState().updateStatus("t1", "done", 0);
-      const session = useTerminalStore.getState().sessions["t1"];
-      expect(session.status).toBe("done");
-      expect(session.exitCode).toBe(0);
-    });
-
-    it("running → error with exit code 1", () => {
-      useTerminalStore.getState().addSession("t1");
-      useTerminalStore.getState().updateStatus("t1", "running");
-      useTerminalStore.getState().updateStatus("t1", "error", 1);
-      const session = useTerminalStore.getState().sessions["t1"];
-      expect(session.status).toBe("error");
-      expect(session.exitCode).toBe(1);
-    });
-
-    it("on nonexistent session → no-op", () => {
-      // Should not throw
-      useTerminalStore.getState().updateStatus("nonexistent", "running");
-      expect(useTerminalStore.getState().sessions["nonexistent"]).toBeUndefined();
     });
   });
 
@@ -71,20 +42,18 @@ describe("useTerminalStore", () => {
   });
 
   describe("persist merge", () => {
-    it("resets all sessions to done", () => {
+    it("preserves notes across sessions", () => {
       const { merge } = (useTerminalStore as any).persist.getOptions();
       const persisted = {
         sessions: {
-          t1: { id: "t1", title: "T1", notes: "", status: "running", exitCode: null },
-          t2: { id: "t2", title: "T2", notes: "", status: "error", exitCode: 1 },
+          t1: { id: "t1", title: "T1", notes: "hello" },
+          t2: { id: "t2", title: "T2", notes: "" },
         },
         activeTerminalId: "t1",
       };
       const result = merge(persisted, { sessions: {}, activeTerminalId: null });
-      expect(result.sessions["t1"].status).toBe("done");
-      expect(result.sessions["t1"].exitCode).toBeNull();
-      expect(result.sessions["t2"].status).toBe("done");
-      expect(result.sessions["t2"].exitCode).toBeNull();
+      expect(result.sessions["t1"].notes).toBe("hello");
+      expect(result.sessions["t2"].notes).toBe("");
     });
   });
 });

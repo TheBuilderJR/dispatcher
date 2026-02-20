@@ -45,7 +45,7 @@ export function TerminalHeader({
     <div className="terminal-header">
       <div className="terminal-header-left">
         <div className="terminal-header-title-row">
-          <StatusDot status={session.status} />
+          <StatusDot terminalId={terminalId} />
           <EditableText
             value={session.title}
             onChange={(v) => updateTitle(terminalId, v)}

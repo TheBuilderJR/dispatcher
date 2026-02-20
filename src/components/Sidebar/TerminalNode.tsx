@@ -67,7 +67,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
         setMenu({ x: e.clientX, y: e.clientY });
       }}
     >
-      <StatusDot status={session.status} />
+      <StatusDot terminalId={terminalId} />
       {editing ? (
         <input
           ref={inputRef}

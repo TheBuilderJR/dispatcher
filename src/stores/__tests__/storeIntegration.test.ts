@@ -91,8 +91,6 @@ describe("Cross-store integration", () => {
     // Terminal store
     const sessions = useTerminalStore.getState().sessions;
     expect(sessions[terminalIds[0]]).toBeDefined();
-    expect(sessions[terminalIds[0]].status).toBe("done");
-
     // Layout store
     const layouts = useLayoutStore.getState().layouts;
     expect(layouts[terminalIds[0]]).toBeDefined();

@@ -27,7 +27,7 @@ export function DetailPanel({
     <div className="detail-panel" style={style}>
       <div className="detail-panel-header">
         <div className="detail-panel-title-row">
-          <StatusDot status={session.status} />
+          <StatusDot terminalId={terminalId} />
           <EditableText
             value={session.title}
             onChange={(v) => updateTitle(terminalId, v)}

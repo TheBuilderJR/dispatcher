@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { TerminalSession, TerminalStatus } from "../types/terminal";
+import type { TerminalSession } from "../types/terminal";
 
 interface TerminalStore {
   sessions: Record<string, TerminalSession>;
@@ -9,7 +9,6 @@ interface TerminalStore {
   addSession: (id: string, title?: string, cwd?: string) => void;
   removeSession: (id: string) => void;
   setActiveTerminal: (id: string | null) => void;
-  updateStatus: (id: string, status: TerminalStatus, exitCode?: number | null) => void;
   updateTitle: (id: string, title: string) => void;
   updateNotes: (id: string, notes: string) => void;
 }
@@ -31,8 +30,6 @@ export const useTerminalStore = create<TerminalStore>()(
               id,
               title: title ?? `Terminal ${terminalCounter}`,
               notes: "",
-              status: "done",
-              exitCode: null,
               cwd,
             },
           },
@@ -57,18 +54,6 @@ export const useTerminalStore = create<TerminalStore>()(
 
       setActiveTerminal: (id) => set({ activeTerminalId: id }),
 
-      updateStatus: (id, status, exitCode) =>
-        set((state) => {
-          const session = state.sessions[id];
-          if (!session) return state;
-          return {
-            sessions: {
-              ...state.sessions,
-              [id]: { ...session, status, exitCode: exitCode ?? null },
-            },
-          };
-        }),
-
       updateTitle: (id, title) =>
         set((state) => {
           const session = state.sessions[id];
@@ -91,10 +76,9 @@ export const useTerminalStore = create<TerminalStore>()(
       name: "dispatcher-terminals",
       merge: (persisted, current) => {
         const merged = { ...current, ...(persisted as Partial<TerminalStore>) };
-        // Reset all restored sessions to "done" (green dot) since PTYs are re-created on mount
         const updated: Record<string, TerminalSession> = {};
         for (const [id, session] of Object.entries(merged.sessions)) {
-          updated[id] = { ...session, notes: session.notes ?? "", status: "done" as const, exitCode: null };
+          updated[id] = { ...session, notes: session.notes ?? "" };
         }
         return { ...merged, sessions: updated };
       },

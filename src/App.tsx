@@ -6,7 +6,6 @@ import { useProjectStore } from "./stores/useProjectStore";
 import { useLayoutStore } from "./stores/useLayoutStore";
 import { useTerminalStore } from "./stores/useTerminalStore";
 import { useFontSizeStore } from "./stores/useFontSizeStore";
-import { onTerminalExit } from "./lib/terminalEvents";
 import { findTerminalIds, findLayoutKeyForTerminal, findSiblingTerminalId } from "./lib/layoutUtils";
 import { closeTerminal, warmPool, refreshPool, getTerminalCwd, writeTerminal } from "./lib/tauriCommands";
 import { disposeTerminalInstance } from "./hooks/useTerminalBridge";
@@ -35,7 +34,6 @@ export default function App() {
   const nodes = useProjectStore((s) => s.nodes);
   const addSession = useTerminalStore((s) => s.addSession);
   const removeSession = useTerminalStore((s) => s.removeSession);
-  const updateStatus = useTerminalStore((s) => s.updateStatus);
   const initLayout = useLayoutStore((s) => s.initLayout);
   const splitTerminal = useLayoutStore((s) => s.splitTerminal);
   const removeTerminalFromLayout = useLayoutStore((s) => s.removeTerminal);
@@ -79,17 +77,6 @@ export default function App() {
     const id = setInterval(() => refreshPool().catch(() => {}), 5 * 60 * 1000);
     return () => clearInterval(id);
   }, []);
-
-  // Listen for terminal exits
-  useEffect(() => {
-    const unlisten = onTerminalExit((payload) => {
-      const status = payload.exit_code === 0 ? "done" : "error";
-      updateStatus(payload.terminal_id, status, payload.exit_code);
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [updateStatus]);
 
   const createProjectWithTerminal = useCallback(
     (projectName: string, terminalName: string) => {
