@@ -123,7 +123,7 @@ describe("useProjectStore", () => {
           activeProjectId: "a",
           projectOrder: [],
         },
-        true
+        true as any
       );
       // Call the merge function manually
       const { merge } = (useProjectStore as any).persist.getOptions();
