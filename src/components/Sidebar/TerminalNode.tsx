@@ -2,8 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { StatusDot } from "../common/StatusDot";
 import { ContextMenu } from "../common/ContextMenu";
 import { useTerminalStore } from "../../stores/useTerminalStore";
-import { useProjectStore } from "../../stores/useProjectStore";
-import { setDragInfo, getDragInfo, clearDragInfo } from "../../lib/dragState";
+import { startDrag } from "../../lib/dragState";
 
 interface TerminalNodeProps {
   terminalId: string;
@@ -18,11 +17,9 @@ interface TerminalNodeProps {
 export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isActive, onClick, onDelete }: TerminalNodeProps) {
   const session = useTerminalStore((s) => s.sessions[terminalId]);
   const updateTitle = useTerminalStore((s) => s.updateTitle);
-  const reorderChild = useProjectStore((s) => s.reorderChild);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  const [dropIndicator, setDropIndicator] = useState<"above" | "below" | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const nodeRef = useRef<HTMLDivElement>(null);
 
@@ -50,74 +47,20 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
     }
   };
 
-  const handleDragStart = (e: React.DragEvent) => {
-    e.dataTransfer.setData(
-      "application/dispatcher-terminal",
-      JSON.stringify({ terminalId, projectId })
-    );
-    e.dataTransfer.effectAllowed = "move";
-    setDragInfo({ type: "terminal", terminalId, projectId, nodeId });
-  };
-
-  const handleDragEnd = () => {
-    clearDragInfo();
-  };
-
-  const handleTerminalDragOver = (e: React.DragEvent) => {
-    const info = getDragInfo();
-    if (!info || info.type !== "terminal") return;
-    if (info.projectId !== projectId) return;
-    if (info.nodeId === nodeId) return;
-
-    e.preventDefault();
-    e.stopPropagation();
-    e.dataTransfer.dropEffect = "move";
-
-    const rect = nodeRef.current?.getBoundingClientRect();
-    if (rect) {
-      const midY = rect.top + rect.height / 2;
-      setDropIndicator(e.clientY < midY ? "above" : "below");
-    }
-  };
-
-  const handleTerminalDragLeave = () => {
-    setDropIndicator(null);
-  };
-
-  const handleTerminalDrop = (e: React.DragEvent) => {
-    const info = getDragInfo();
-    if (!info || info.type !== "terminal") {
-      setDropIndicator(null);
-      return;
-    }
-    if (info.projectId !== projectId || info.nodeId === nodeId) {
-      setDropIndicator(null);
-      return;
-    }
-
-    e.preventDefault();
-    e.stopPropagation();
-
-    const rect = nodeRef.current?.getBoundingClientRect();
-    if (rect) {
-      const midY = rect.top + rect.height / 2;
-      const position = e.clientY < midY ? "before" : "after";
-      reorderChild(parentNodeId, info.nodeId, nodeId, position);
-    }
-    setDropIndicator(null);
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    startDrag({ type: "terminal", terminalId, projectId, nodeId }, e.clientX, e.clientY, e.currentTarget as HTMLElement);
   };
 
   return (
     <div
       ref={nodeRef}
-      className={`sidebar-terminal-node ${isActive ? "active" : ""} ${dropIndicator === "above" ? "drop-indicator-above" : ""} ${dropIndicator === "below" ? "drop-indicator-below" : ""}`}
+      className={`sidebar-terminal-node ${isActive ? "active" : ""}`}
+      data-node-id={nodeId}
+      data-project-id={projectId}
+      data-parent-node-id={parentNodeId}
       onClick={onClick}
-      draggable
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
-      onDragOver={handleTerminalDragOver}
-      onDragLeave={handleTerminalDragLeave}
-      onDrop={handleTerminalDrop}
+      onPointerDown={handlePointerDown}
       onContextMenu={(e) => {
         e.preventDefault();
         e.stopPropagation();

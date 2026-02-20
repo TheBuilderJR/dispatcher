@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { ProjectNode } from "./ProjectNode";
 import { ContextMenu } from "../common/ContextMenu";
+import { registerDragCallbacks } from "../../lib/dragState";
 
 interface SidebarProps {
   onNewTerminal: () => void;
@@ -28,8 +29,20 @@ export function Sidebar({
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const setActiveProject = useProjectStore((s) => s.setActiveProject);
   const reorderProject = useProjectStore((s) => s.reorderProject);
+  const reorderChild = useProjectStore((s) => s.reorderChild);
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
   const setActiveTerminal = useTerminalStore((s) => s.setActiveTerminal);
+
+  const callbacksRef = useRef({ reorderProject, onMoveTerminal, reorderChild });
+  callbacksRef.current = { reorderProject, onMoveTerminal, reorderChild };
+
+  useEffect(() => {
+    registerDragCallbacks({
+      onReorderProject: (...args) => callbacksRef.current.reorderProject(...args),
+      onMoveTerminal: (...args) => callbacksRef.current.onMoveTerminal(...args),
+      onReorderChild: (...args) => callbacksRef.current.reorderChild(...args),
+    });
+  }, []);
 
   const [bgMenu, setBgMenu] = useState<{ x: number; y: number } | null>(null);
 
@@ -111,12 +124,6 @@ export function Sidebar({
             onDeleteProject={() => onDeleteProject(project.id)}
             onDeleteTerminal={(terminalId) => onDeleteTerminal(terminalId, project.id)}
             onNewTerminal={() => onNewTerminalInProject(project.id)}
-            onDropTerminal={(terminalId, sourceProjectId) =>
-              onMoveTerminal(terminalId, sourceProjectId, project.id)
-            }
-            onReorderProject={(draggedProjectId, targetProjectId, position) =>
-              reorderProject(draggedProjectId, targetProjectId, position)
-            }
           />
         ))}
       </div>

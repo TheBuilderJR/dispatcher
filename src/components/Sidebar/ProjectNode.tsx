@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { SidebarTreeNode } from "./SidebarTreeNode";
 import { ContextMenu } from "../common/ContextMenu";
-import { setDragInfo, getDragInfo, clearDragInfo } from "../../lib/dragState";
+import { startDrag } from "../../lib/dragState";
 import type { Project } from "../../types/project";
 
 interface ProjectNodeProps {
@@ -14,8 +14,6 @@ interface ProjectNodeProps {
   onDeleteProject: () => void;
   onDeleteTerminal: (terminalId: string) => void;
   onNewTerminal: () => void;
-  onDropTerminal: (terminalId: string, sourceProjectId: string) => void;
-  onReorderProject: (draggedProjectId: string, targetProjectId: string, position: "before" | "after") => void;
 }
 
 export function ProjectNode({
@@ -27,8 +25,6 @@ export function ProjectNode({
   onDeleteProject,
   onDeleteTerminal,
   onNewTerminal,
-  onDropTerminal,
-  onReorderProject,
 }: ProjectNodeProps) {
   const nodes = useProjectStore((s) => s.nodes);
   const toggleExpanded = useProjectStore((s) => s.toggleProjectExpanded);
@@ -38,8 +34,6 @@ export function ProjectNode({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  const [dragOver, setDragOver] = useState(false);
-  const [dropIndicator, setDropIndicator] = useState<"above" | "below" | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
 
@@ -63,81 +57,20 @@ export function ProjectNode({
     }
   };
 
-  const handleDragStart = (e: React.DragEvent) => {
-    e.dataTransfer.setData("application/dispatcher-project", project.id);
-    e.dataTransfer.effectAllowed = "move";
-    setDragInfo({ type: "project", projectId: project.id });
-  };
-
-  const handleDragEnd = () => {
-    clearDragInfo();
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    const info = getDragInfo();
-    if (!info) return;
-
-    if (info.type === "project") {
-      if (info.projectId === project.id) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      const rect = headerRef.current?.getBoundingClientRect();
-      if (rect) {
-        const midY = rect.top + rect.height / 2;
-        setDropIndicator(e.clientY < midY ? "above" : "below");
-      }
-      setDragOver(false);
-    } else if (info.type === "terminal") {
-      if (info.projectId === project.id) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      setDragOver(true);
-      setDropIndicator(null);
-    }
-  };
-
-  const handleDragLeave = () => {
-    setDragOver(false);
-    setDropIndicator(null);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    setDragOver(false);
-    setDropIndicator(null);
-
-    const info = getDragInfo();
-    if (!info) return;
-
-    if (info.type === "project" && info.projectId !== project.id) {
-      e.preventDefault();
-      const rect = headerRef.current?.getBoundingClientRect();
-      if (rect) {
-        const midY = rect.top + rect.height / 2;
-        const position = e.clientY < midY ? "before" : "after";
-        onReorderProject(info.projectId, project.id, position);
-      }
-      return;
-    }
-
-    if (info.type === "terminal" && info.projectId !== project.id) {
-      e.preventDefault();
-      onDropTerminal(info.terminalId, info.projectId);
-    }
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    startDrag({ type: "project", projectId: project.id }, e.clientX, e.clientY, e.currentTarget as HTMLElement);
   };
 
   return (
     <div
-      className={`sidebar-project-node ${isActive ? "active" : ""} ${dragOver ? "drag-over" : ""} ${dropIndicator === "above" ? "drop-indicator-above" : ""} ${dropIndicator === "below" ? "drop-indicator-below" : ""}`}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      className={`sidebar-project-node ${isActive ? "active" : ""}`}
+      data-project-id={project.id}
     >
       <div
         ref={headerRef}
         className="sidebar-project-header"
-        draggable
-        onDragStart={handleDragStart}
-        onDragEnd={handleDragEnd}
+        onPointerDown={handlePointerDown}
         onClick={onSelect}
         onContextMenu={(e) => {
           e.preventDefault();

@@ -213,13 +213,17 @@ html, body, #root {
   pointer-events: none;
 }
 
-.sidebar-terminal-node[draggable="true"] {
+.sidebar-terminal-node {
   cursor: grab;
 }
 
-.sidebar-terminal-node[draggable="true"]:active {
-  cursor: grabbing;
+.sidebar-project-header {
+  cursor: grab;
+}
+
+.is-dragging {
   opacity: 0.5;
+  pointer-events: none;
 }
 
 /* Delete buttons on hover */
