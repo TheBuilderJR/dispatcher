@@ -13,25 +13,96 @@ import {
 import type { TerminalOutputPayload } from "../lib/tauriCommands";
 import { useFontSizeStore } from "../stores/useFontSizeStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
+import { parseShellIntegration, OSC_RE } from "../lib/shellIntegration";
 
 // ---------------------------------------------------------------------------
-// Shell integration — OSC 7770 parsing + hook injection
+// Shell integration — hook injection + unhooked sub-shell detection
 // ---------------------------------------------------------------------------
 
-const OSC_RE = /\x1b\]7770;([^\x07]*)\x07/g;
+// Per-terminal state for detecting unhooked sub-shells (SSH, nested shells).
+interface HookState {
+  /** A command is running (preexec fired, precmd hasn't yet). */
+  commandRunning: boolean;
+  /** Timestamp of the most recent preexec. */
+  lastPreexecTime: number;
+  /** Whether we already attempted re-injection during the current command. */
+  reinjectionAttempted: boolean;
+  /** Whether we're waiting for an OSC after the user pressed Enter. */
+  awaitingOsc: boolean;
+  /** Timer for the OSC wait. */
+  checkTimer: ReturnType<typeof setTimeout> | null;
+}
 
-/** Strip OSC 7770 sequences from PTY output and update terminal status. */
-function parseShellIntegration(terminalId: string, data: string): string {
-  return data.replace(OSC_RE, (_, payload: string) => {
-    if (payload === "preexec") {
-      useTerminalStore.getState().updateStatus(terminalId, "running");
-    } else if (payload.startsWith("precmd;")) {
-      const code = parseInt(payload.slice(7), 10);
-      const status = code === 0 ? "done" : "error";
-      useTerminalStore.getState().updateStatus(terminalId, status, code);
+const hookStates = new Map<string, HookState>();
+
+function getHookState(terminalId: string): HookState {
+  let s = hookStates.get(terminalId);
+  if (!s) {
+    s = {
+      commandRunning: false,
+      lastPreexecTime: 0,
+      reinjectionAttempted: false,
+      awaitingOsc: false,
+      checkTimer: null,
+    };
+    hookStates.set(terminalId, s);
+  }
+  return s;
+}
+
+/**
+ * Wraps parseShellIntegration with hook-state tracking for re-injection
+ * detection. Updates commandRunning / awaitingOsc state on every OSC seen.
+ */
+function parseShellIntegrationWithHookState(terminalId: string, data: string): string {
+  // First, update hook state for every OSC found in the data.
+  const oscPattern = new RegExp(OSC_RE.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = oscPattern.exec(data)) !== null) {
+    const hs = getHookState(terminalId);
+    hs.awaitingOsc = false;
+    if (hs.checkTimer) {
+      clearTimeout(hs.checkTimer);
+      hs.checkTimer = null;
     }
-    return ""; // strip from terminal output
-  });
+    const payload = match[1];
+    if (payload === "preexec") {
+      hs.commandRunning = true;
+      hs.lastPreexecTime = Date.now();
+      hs.reinjectionAttempted = false;
+    } else if (payload.startsWith("precmd;")) {
+      hs.commandRunning = false;
+    }
+  }
+  // Then delegate to the pure parsing function for store updates + stripping.
+  return parseShellIntegration(terminalId, data);
+}
+
+/**
+ * Called when the user presses Enter. If a local command has been running for
+ * a while (e.g. SSH), the user is likely in a sub-shell without hooks. Wait
+ * briefly for an OSC preexec — if none arrives, re-inject hooks.
+ */
+function checkForUnhookedShell(terminalId: string) {
+  const hs = getHookState(terminalId);
+  if (
+    !hs.commandRunning ||
+    hs.reinjectionAttempted ||
+    Date.now() - hs.lastPreexecTime < 2000
+  ) {
+    return;
+  }
+
+  hs.awaitingOsc = true;
+  if (hs.checkTimer) clearTimeout(hs.checkTimer);
+  hs.checkTimer = setTimeout(() => {
+    hs.checkTimer = null;
+    if (hs.awaitingOsc) {
+      hs.awaitingOsc = false;
+      hs.reinjectionAttempted = true;
+      injectShellIntegration(terminalId);
+    }
+  }, 500);
 }
 
 /** Inject precmd/preexec shell hooks that emit OSC 7770 sequences. */
@@ -46,15 +117,28 @@ function injectShellIntegration(terminalId: string) {
     "   precmd_functions+=(__dp_precmd)",
     "   preexec_functions+=(__dp_preexec)",
     // --- bash ---
+    // The DEBUG trap fires before every simple command AND before the first
+    // command in a shell function. Without a guard it emits a spurious preexec
+    // during PROMPT_COMMAND, leaving the status stuck on "running".
+    // __dp_prompt_shown=1 is set by precmd after the prompt is ready;
+    // preexec only emits when that flag is set and immediately clears it.
+    // Both functions save/restore $? so the exit code propagates correctly.
     ' elif [ -n "$BASH_VERSION" ]; then',
     "   __dp_precmd() {",
-    '     local ec=$?',
+    "     local ec=$?",
     '     printf "\\033]7770;precmd;%d\\007" "$ec"',
     "     return $ec",
     "   }",
-    '   __dp_preexec() { printf "\\033]7770;preexec\\007"; }',
-    '   PROMPT_COMMAND="__dp_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"',
-    '   trap \'__dp_preexec\' DEBUG',
+    "   __dp_preexec() {",
+    "     local ec=$?",
+    '     if [ "$__dp_prompt_shown" = 1 ]; then',
+    "       __dp_prompt_shown=0",
+    '       printf "\\033]7770;preexec\\007"',
+    "     fi",
+    "     return $ec",
+    "   }",
+    '   PROMPT_COMMAND="__dp_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};__dp_prompt_shown=1"',
+    "   trap '__dp_preexec' DEBUG",
     " fi",
     " clear",
     "",
@@ -62,6 +146,10 @@ function injectShellIntegration(terminalId: string) {
 
   writeTerminal(terminalId, script).catch(() => {});
 }
+
+// Per-terminal buffer for partial OSC 7770 sequences split across PTY chunks
+// (common over SSH where network packets fragment the data).
+const oscPartials = new Map<string, string>();
 
 // ---------------------------------------------------------------------------
 // Persistent terminal instances — survive React remounts caused by layout
@@ -138,6 +226,11 @@ function loadWebGLAddon(xterm: Terminal) {
 
 /** Dispose an xterm instance and its PTY tracking when a terminal is truly closed. */
 export function disposeTerminalInstance(terminalId: string) {
+  const hs = hookStates.get(terminalId);
+  if (hs?.checkTimer) clearTimeout(hs.checkTimer);
+  hookStates.delete(terminalId);
+  oscPartials.delete(terminalId);
+
   const inst = instances.get(terminalId);
   if (inst) {
     inst.xterm.dispose();
@@ -266,8 +359,24 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
 
         const channel = new Channel<TerminalOutputPayload>();
         channel.onmessage = (msg) => {
-          const cleaned = parseShellIntegration(msg.terminal_id, msg.data);
-          if (cleaned) batchedWrite(msg.terminal_id, cleaned);
+          let data = msg.data;
+          const tid = msg.terminal_id;
+
+          // Reassemble partial OSC 7770 sequences split across chunks.
+          const partial = oscPartials.get(tid);
+          if (partial) {
+            data = partial + data;
+            oscPartials.delete(tid);
+          }
+          const lastOsc = data.lastIndexOf("\x1b]7770;");
+          if (lastOsc !== -1 && data.indexOf("\x07", lastOsc) === -1) {
+            oscPartials.set(tid, data.substring(lastOsc));
+            data = data.substring(0, lastOsc);
+            if (!data) return;
+          }
+
+          const cleaned = parseShellIntegrationWithHookState(tid, data);
+          if (cleaned) batchedWrite(tid, cleaned);
         };
 
         const cols = i.xterm.cols;
@@ -287,6 +396,10 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
     // Forward user input to PTY
     const dataDisposable = inst.xterm.onData((data) => {
       writeTerminal(terminalId, data).catch(() => {});
+      // Detect Enter — may trigger re-injection into unhooked sub-shells.
+      if (data.includes("\r") || data.includes("\n")) {
+        checkForUnhookedShell(terminalId);
+      }
     });
 
     // Handle resize
