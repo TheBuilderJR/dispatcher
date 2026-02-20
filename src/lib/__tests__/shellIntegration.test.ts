@@ -63,3 +63,91 @@ describe("parseShellIntegration", () => {
     expect(parseShellIntegration(TERM_ID, "")).toBe("");
   });
 });
+
+// ---------------------------------------------------------------------------
+// OSC partial reassembly — replicates the logic from useTerminalBridge.ts
+// channel.onmessage so we can test it without the hook/DOM.
+// ---------------------------------------------------------------------------
+
+describe("OSC partial reassembly", () => {
+  const TERM_ID = "partial-test";
+  const oscPartials = new Map<string, string>();
+
+  function processChunk(data: string): string {
+    let d = data;
+    const partial = oscPartials.get(TERM_ID);
+    if (partial) {
+      d = partial + d;
+      oscPartials.delete(TERM_ID);
+    }
+    const lastOsc = d.lastIndexOf("\x1b]7770;");
+    if (lastOsc !== -1 && d.indexOf("\x07", lastOsc) === -1) {
+      oscPartials.set(TERM_ID, d.substring(lastOsc));
+      d = d.substring(0, lastOsc);
+      if (!d) return "";
+    }
+    return parseShellIntegration(TERM_ID, d);
+  }
+
+  beforeEach(() => {
+    oscPartials.clear();
+    useTerminalStore.getState().addSession(TERM_ID, "Test");
+  });
+
+  it("reassembles a split preexec OSC across two chunks", () => {
+    // Chunk 1: starts the OSC but no BEL terminator
+    const chunk1 = "output\x1b]7770;pre";
+    const result1 = processChunk(chunk1);
+    expect(result1).toBe("output");
+    expect(oscPartials.has(TERM_ID)).toBe(true);
+
+    // Chunk 2: completes the OSC
+    const chunk2 = "exec\x07more output";
+    const result2 = processChunk(chunk2);
+    expect(result2).toBe("more output");
+    expect(useTerminalStore.getState().sessions[TERM_ID].status).toBe("running");
+  });
+
+  it("reassembles a split precmd OSC across two chunks", () => {
+    const chunk1 = "\x1b]7770;precmd;";
+    const result1 = processChunk(chunk1);
+    expect(result1).toBe("");
+
+    const chunk2 = "0\x07prompt$ ";
+    const result2 = processChunk(chunk2);
+    expect(result2).toBe("prompt$ ");
+    expect(useTerminalStore.getState().sessions[TERM_ID].status).toBe("done");
+    expect(useTerminalStore.getState().sessions[TERM_ID].exitCode).toBe(0);
+  });
+
+  it("handles complete OSC in a single chunk (no partial)", () => {
+    const chunk = "before\x1b]7770;preexec\x07after";
+    const result = processChunk(chunk);
+    expect(result).toBe("beforeafter");
+    expect(oscPartials.has(TERM_ID)).toBe(false);
+  });
+
+  it("handles chunk that is entirely a partial OSC", () => {
+    const chunk1 = "\x1b]7770;preexec";
+    const result1 = processChunk(chunk1);
+    expect(result1).toBe("");
+
+    const chunk2 = "\x07";
+    const result2 = processChunk(chunk2);
+    expect(result2).toBe("");
+    expect(useTerminalStore.getState().sessions[TERM_ID].status).toBe("running");
+  });
+
+  it("complete OSC followed by partial OSC in same chunk", () => {
+    const chunk1 = "\x1b]7770;preexec\x07output\x1b]7770;precmd;";
+    const result1 = processChunk(chunk1);
+    expect(result1).toBe("output");
+    expect(useTerminalStore.getState().sessions[TERM_ID].status).toBe("running");
+
+    const chunk2 = "1\x07";
+    const result2 = processChunk(chunk2);
+    expect(result2).toBe("");
+    expect(useTerminalStore.getState().sessions[TERM_ID].status).toBe("error");
+    expect(useTerminalStore.getState().sessions[TERM_ID].exitCode).toBe(1);
+  });
+});

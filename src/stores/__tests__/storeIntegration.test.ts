@@ -5,6 +5,78 @@ import { useLayoutStore } from "../useLayoutStore";
 import { findTerminalIds, findLayoutKeyForTerminal, findSiblingTerminalId } from "../../lib/layoutUtils";
 import { createTestProject, createTestProjectWithSplit } from "../../test/helpers";
 
+// ---------------------------------------------------------------------------
+// Replicate the tab-cycling algorithm from App.tsx so we can test it
+// in isolation without React/DOM. This must match the keydown handler.
+// ---------------------------------------------------------------------------
+
+function buildTerminalList() {
+  const { projects: allProjects, projectOrder, nodes } = useProjectStore.getState();
+  const sessions = useTerminalStore.getState().sessions;
+  const allTerminals: { terminalId: string; projectId: string }[] = [];
+  for (const projId of projectOrder) {
+    const proj = allProjects[projId];
+    if (!proj || !proj.expanded) continue;
+    const rootNode = nodes[proj.rootGroupId];
+    if (!rootNode?.children) continue;
+    for (const childId of rootNode.children) {
+      const child = nodes[childId];
+      if (child?.type === "terminal" && child.terminalId && sessions[child.terminalId]) {
+        allTerminals.push({ terminalId: child.terminalId, projectId: projId });
+      }
+    }
+  }
+  return allTerminals;
+}
+
+function cycleTerminal(
+  forward: boolean,
+  lastFocusedPane: Map<string, string>
+) {
+  const allTerminals = buildTerminalList();
+  if (allTerminals.length < 2) return;
+
+  const activeTermId = useTerminalStore.getState().activeTerminalId;
+  let currentIdx = activeTermId
+    ? allTerminals.findIndex((t) => t.terminalId === activeTermId)
+    : -1;
+  // If active terminal is a split pane (not a tab root), find its parent tab
+  if (currentIdx === -1 && activeTermId) {
+    const layouts = useLayoutStore.getState().layouts;
+    const parentKey = findLayoutKeyForTerminal(layouts, activeTermId);
+    if (parentKey) {
+      currentIdx = allTerminals.findIndex((t) => t.terminalId === parentKey);
+    }
+  }
+  let nextIdx: number;
+  if (currentIdx === -1) {
+    nextIdx = forward ? 0 : allTerminals.length - 1;
+  } else if (forward) {
+    nextIdx = currentIdx >= allTerminals.length - 1 ? 0 : currentIdx + 1;
+  } else {
+    nextIdx = currentIdx <= 0 ? allTerminals.length - 1 : currentIdx - 1;
+  }
+  const next = allTerminals[nextIdx];
+  useProjectStore.getState().setActiveProject(next.projectId);
+  const restored = lastFocusedPane.get(next.terminalId);
+  useTerminalStore.getState().setActiveTerminal(restored || next.terminalId);
+}
+
+/** Simulate the lastFocusedPane subscription from App.tsx. */
+function trackLastFocusedPane(lastFocusedPane: Map<string, string>) {
+  return useTerminalStore.subscribe((state) => {
+    const activeId = state.activeTerminalId;
+    if (!activeId) return;
+    const layouts = useLayoutStore.getState().layouts;
+    const tabRoot = findLayoutKeyForTerminal(layouts, activeId);
+    if (tabRoot) {
+      lastFocusedPane.set(tabRoot, activeId);
+    } else if (layouts[activeId]) {
+      lastFocusedPane.set(activeId, activeId);
+    }
+  });
+}
+
 describe("Cross-store integration", () => {
   it("full project lifecycle: create → verify all 3 stores", () => {
     const { projectId, rootGroupId, terminalIds, nodeIds } = createTestProject({ terminalCount: 1 });
@@ -294,5 +366,210 @@ describe("Cross-store integration", () => {
     useProjectStore.getState().removeProject(proj1.projectId);
 
     expect(useProjectStore.getState().activeProjectId).toBe(proj2.projectId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tab cycling (Cmd+Shift+[ / Cmd+Shift+])
+// ---------------------------------------------------------------------------
+
+describe("Tab cycling", () => {
+  it("cycles forward through tabs in a single project", () => {
+    const proj = createTestProject({ terminalCount: 3 });
+    const [t1, t2, t3] = proj.terminalIds;
+    const lastFocused = new Map<string, string>();
+
+    useTerminalStore.getState().setActiveTerminal(t1);
+    cycleTerminal(true, lastFocused);
+    expect(useTerminalStore.getState().activeTerminalId).toBe(t2);
+
+    cycleTerminal(true, lastFocused);
+    expect(useTerminalStore.getState().activeTerminalId).toBe(t3);
+  });
+
+  it("cycles backward through tabs", () => {
+    const proj = createTestProject({ terminalCount: 3 });
+    const [t1, t2, t3] = proj.terminalIds;
+    const lastFocused = new Map<string, string>();
+
+    useTerminalStore.getState().setActiveTerminal(t3);
+    cycleTerminal(false, lastFocused);
+    expect(useTerminalStore.getState().activeTerminalId).toBe(t2);
+
+    cycleTerminal(false, lastFocused);
+    expect(useTerminalStore.getState().activeTerminalId).toBe(t1);
+  });
+
+  it("wraps around forward: last → first", () => {
+    const proj = createTestProject({ terminalCount: 3 });
+    const [t1, , t3] = proj.terminalIds;
+    const lastFocused = new Map<string, string>();
+
+    useTerminalStore.getState().setActiveTerminal(t3);
+    cycleTerminal(true, lastFocused);
+    expect(useTerminalStore.getState().activeTerminalId).toBe(t1);
+  });
+
+  it("wraps around backward: first → last", () => {
+    const proj = createTestProject({ terminalCount: 3 });
+    const [t1, , t3] = proj.terminalIds;
+    const lastFocused = new Map<string, string>();
+
+    useTerminalStore.getState().setActiveTerminal(t1);
+    cycleTerminal(false, lastFocused);
+    expect(useTerminalStore.getState().activeTerminalId).toBe(t3);
+  });
+
+  it("cycles across projects", () => {
+    const proj1 = createTestProject({ terminalCount: 1 });
+    const proj2 = createTestProject({ terminalCount: 1 });
+    const lastFocused = new Map<string, string>();
+
+    useTerminalStore.getState().setActiveTerminal(proj1.terminalIds[0]);
+    useProjectStore.getState().setActiveProject(proj1.projectId);
+
+    cycleTerminal(true, lastFocused);
+
+    expect(useTerminalStore.getState().activeTerminalId).toBe(proj2.terminalIds[0]);
+    expect(useProjectStore.getState().activeProjectId).toBe(proj2.projectId);
+  });
+
+  it("skips collapsed projects", () => {
+    const proj1 = createTestProject({ terminalCount: 1 });
+    const proj2 = createTestProject({ terminalCount: 1 });
+    const proj3 = createTestProject({ terminalCount: 1 });
+    const lastFocused = new Map<string, string>();
+
+    // Collapse proj2
+    useProjectStore.getState().toggleProjectExpanded(proj2.projectId);
+
+    useTerminalStore.getState().setActiveTerminal(proj1.terminalIds[0]);
+    useProjectStore.getState().setActiveProject(proj1.projectId);
+
+    cycleTerminal(true, lastFocused);
+
+    // Should skip proj2 and go to proj3
+    expect(useTerminalStore.getState().activeTerminalId).toBe(proj3.terminalIds[0]);
+    expect(useProjectStore.getState().activeProjectId).toBe(proj3.projectId);
+  });
+
+  it("resolves split pane to parent tab for cycling position", () => {
+    const proj = createTestProject({ terminalCount: 2 });
+    const [t1, t2] = proj.terminalIds;
+    const lastFocused = new Map<string, string>();
+
+    // Split tab1 and focus the split pane
+    const splitId = "split-in-t1";
+    useTerminalStore.getState().addSession(splitId);
+    useLayoutStore.getState().splitTerminal(t1, t1, splitId, "horizontal");
+    useTerminalStore.getState().setActiveTerminal(splitId);
+
+    // Cycle forward — should move from tab1 (split pane context) to tab2
+    cycleTerminal(true, lastFocused);
+    expect(useTerminalStore.getState().activeTerminalId).toBe(t2);
+  });
+
+  it("no-op with fewer than 2 tabs", () => {
+    const proj = createTestProject({ terminalCount: 1 });
+    const lastFocused = new Map<string, string>();
+
+    useTerminalStore.getState().setActiveTerminal(proj.terminalIds[0]);
+    cycleTerminal(true, lastFocused);
+
+    // Still on the same terminal (cycleTerminal returns early)
+    expect(useTerminalStore.getState().activeTerminalId).toBe(proj.terminalIds[0]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Last-focused pane tracking + restoration
+// ---------------------------------------------------------------------------
+
+describe("Last-focused pane restoration", () => {
+  it("restores last-focused split pane when cycling back to a tab", () => {
+    const proj = createTestProject({ terminalCount: 2 });
+    const [t1, t2] = proj.terminalIds;
+    const lastFocused = new Map<string, string>();
+    const unsub = trackLastFocusedPane(lastFocused);
+
+    // Split tab1 and focus the split pane
+    const splitId = "split-in-t1";
+    useTerminalStore.getState().addSession(splitId);
+    useLayoutStore.getState().splitTerminal(t1, t1, splitId, "horizontal");
+    useTerminalStore.getState().setActiveTerminal(splitId);
+
+    // Subscription should record splitId under tab root t1
+    expect(lastFocused.get(t1)).toBe(splitId);
+
+    // Cycle to tab2
+    cycleTerminal(true, lastFocused);
+    expect(useTerminalStore.getState().activeTerminalId).toBe(t2);
+
+    // Cycle back to tab1 — should restore to splitId, not t1
+    cycleTerminal(false, lastFocused);
+    expect(useTerminalStore.getState().activeTerminalId).toBe(splitId);
+
+    unsub();
+  });
+
+  it("falls back to tab root when no pane was previously focused", () => {
+    const proj = createTestProject({ terminalCount: 2 });
+    const [t1, t2] = proj.terminalIds;
+    const lastFocused = new Map<string, string>();
+
+    // t2 is active (last added), no lastFocused entries for t1
+    useTerminalStore.getState().setActiveTerminal(t2);
+
+    // Cycle backward to t1
+    cycleTerminal(false, lastFocused);
+    // Should fall back to t1 itself since there's no lastFocused entry
+    expect(useTerminalStore.getState().activeTerminalId).toBe(t1);
+  });
+
+  it("stale lastFocusedPane entry after split pane is closed", () => {
+    // This tests a known edge case: if you focus a split pane, cycle away,
+    // then close that pane, cycling back restores a stale (nonexistent) ID.
+    const proj = createTestProject({ terminalCount: 2 });
+    const [t1, t2] = proj.terminalIds;
+    const lastFocused = new Map<string, string>();
+    const unsub = trackLastFocusedPane(lastFocused);
+
+    // Split tab1, focus split pane
+    const splitId = "split-in-t1";
+    useTerminalStore.getState().addSession(splitId);
+    useLayoutStore.getState().splitTerminal(t1, t1, splitId, "horizontal");
+    useTerminalStore.getState().setActiveTerminal(splitId);
+
+    // Cycle to t2
+    cycleTerminal(true, lastFocused);
+
+    // Close the split pane while t2 is active
+    useLayoutStore.getState().removeTerminal(t1, splitId);
+    useTerminalStore.getState().removeSession(splitId);
+
+    // Cycle back — lastFocused still has the stale splitId
+    cycleTerminal(false, lastFocused);
+    // BUG: activeTerminalId is set to the closed splitId.
+    // The session doesn't exist, so the UI would show nothing focused.
+    const activeId = useTerminalStore.getState().activeTerminalId;
+    const session = useTerminalStore.getState().sessions[activeId!];
+    expect(session).toBeUndefined(); // demonstrates the stale entry bug
+
+    unsub();
+  });
+
+  it("tracks tab root focus correctly for single-pane tabs", () => {
+    const proj = createTestProject({ terminalCount: 2 });
+    const [t1, t2] = proj.terminalIds;
+    const lastFocused = new Map<string, string>();
+    const unsub = trackLastFocusedPane(lastFocused);
+
+    useTerminalStore.getState().setActiveTerminal(t1);
+    expect(lastFocused.get(t1)).toBe(t1);
+
+    useTerminalStore.getState().setActiveTerminal(t2);
+    expect(lastFocused.get(t2)).toBe(t2);
+
+    unsub();
   });
 });

@@ -80,6 +80,10 @@ export function TerminalHeader({
               if (e.key === "Escape") {
                 setNotesOpen(false);
               }
+              // Let tab-cycling shortcuts bubble to the global handler
+              if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.code === "BracketLeft" || e.code === "BracketRight")) {
+                return;
+              }
               e.stopPropagation();
             }}
           />

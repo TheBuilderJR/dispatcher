@@ -57,7 +57,13 @@ export function DetailPanel({
           value={session.notes}
           placeholder="Write notes about this terminal..."
           onChange={(e) => updateNotes(terminalId, e.target.value)}
-          onKeyDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            // Let tab-cycling shortcuts (Cmd+Shift+[/]) bubble to the global handler
+            if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.code === "BracketLeft" || e.code === "BracketRight")) {
+              return;
+            }
+            e.stopPropagation();
+          }}
         />
       </div>
     </div>
