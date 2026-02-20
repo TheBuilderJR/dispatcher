@@ -31,7 +31,7 @@ export const useTerminalStore = create<TerminalStore>()(
               id,
               title: title ?? `Terminal ${terminalCounter}`,
               notes: "",
-              status: "running",
+              status: "done",
               exitCode: null,
               cwd,
             },
@@ -91,10 +91,10 @@ export const useTerminalStore = create<TerminalStore>()(
       name: "dispatcher-terminals",
       merge: (persisted, current) => {
         const merged = { ...current, ...(persisted as Partial<TerminalStore>) };
-        // Reset all restored sessions to "running" since PTYs are re-created on mount
+        // Reset all restored sessions to "done" (green dot) since PTYs are re-created on mount
         const updated: Record<string, TerminalSession> = {};
         for (const [id, session] of Object.entries(merged.sessions)) {
-          updated[id] = { ...session, notes: session.notes ?? "", status: "running" as const, exitCode: null };
+          updated[id] = { ...session, notes: session.notes ?? "", status: "done" as const, exitCode: null };
         }
         return { ...merged, sessions: updated };
       },

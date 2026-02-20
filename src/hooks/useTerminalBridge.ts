@@ -12,6 +12,56 @@ import {
 } from "../lib/tauriCommands";
 import type { TerminalOutputPayload } from "../lib/tauriCommands";
 import { useFontSizeStore } from "../stores/useFontSizeStore";
+import { useTerminalStore } from "../stores/useTerminalStore";
+
+// ---------------------------------------------------------------------------
+// Shell integration — OSC 7770 parsing + hook injection
+// ---------------------------------------------------------------------------
+
+const OSC_RE = /\x1b\]7770;([^\x07]*)\x07/g;
+
+/** Strip OSC 7770 sequences from PTY output and update terminal status. */
+function parseShellIntegration(terminalId: string, data: string): string {
+  return data.replace(OSC_RE, (_, payload: string) => {
+    if (payload === "preexec") {
+      useTerminalStore.getState().updateStatus(terminalId, "running");
+    } else if (payload.startsWith("precmd;")) {
+      const code = parseInt(payload.slice(7), 10);
+      const status = code === 0 ? "done" : "error";
+      useTerminalStore.getState().updateStatus(terminalId, status, code);
+    }
+    return ""; // strip from terminal output
+  });
+}
+
+/** Inject precmd/preexec shell hooks that emit OSC 7770 sequences. */
+function injectShellIntegration(terminalId: string) {
+  // Leading space keeps commands out of shell history (HISTCONTROL=ignorespace).
+  // We detect the shell via environment variables and define appropriate hooks.
+  const script = [
+    // --- zsh ---
+    ' if [ -n "$ZSH_VERSION" ]; then',
+    '   __dp_precmd() { printf "\\033]7770;precmd;%d\\007" "$?"; }',
+    '   __dp_preexec() { printf "\\033]7770;preexec\\007"; }',
+    "   precmd_functions+=(__dp_precmd)",
+    "   preexec_functions+=(__dp_preexec)",
+    // --- bash ---
+    ' elif [ -n "$BASH_VERSION" ]; then',
+    "   __dp_precmd() {",
+    '     local ec=$?',
+    '     printf "\\033]7770;precmd;%d\\007" "$ec"',
+    "     return $ec",
+    "   }",
+    '   __dp_preexec() { printf "\\033]7770;preexec\\007"; }',
+    '   PROMPT_COMMAND="__dp_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"',
+    '   trap \'__dp_preexec\' DEBUG',
+    " fi",
+    " clear",
+    "",
+  ].join("\n");
+
+  writeTerminal(terminalId, script).catch(() => {});
+}
 
 // ---------------------------------------------------------------------------
 // Persistent terminal instances — survive React remounts caused by layout
@@ -216,16 +266,18 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
 
         const channel = new Channel<TerminalOutputPayload>();
         channel.onmessage = (msg) => {
-          // Batch writes so xterm.js renders once per frame instead of
-          // once per 4096-byte IPC chunk.
-          batchedWrite(msg.terminal_id, msg.data);
+          const cleaned = parseShellIntegration(msg.terminal_id, msg.data);
+          if (cleaned) batchedWrite(msg.terminal_id, cleaned);
         };
 
         const cols = i.xterm.cols;
         const rows = i.xterm.rows;
 
         createPty(terminalId, channel, cwd, cols, rows)
-          .then(() => warmPool(1).catch(() => {}))
+          .then(() => {
+            injectShellIntegration(terminalId);
+            warmPool(1).catch(() => {});
+          })
           .catch((err) => {
             i.xterm.write(`\r\nError creating terminal: ${err}\r\n`);
           });
