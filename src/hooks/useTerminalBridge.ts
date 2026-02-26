@@ -297,7 +297,6 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
     // Forward user input to PTY.
     const dataDisposable = inst.xterm.onData((data) => {
       writeTerminal(terminalId, data).catch(() => {});
-      window.dispatchEvent(new CustomEvent("terminal-typed", { detail: terminalId }));
     });
 
     // Handle resize

@@ -62,6 +62,13 @@ function cycleTerminal(
   useTerminalStore.getState().setActiveTerminal(restored || next.terminalId);
 }
 
+function findAdjacentSidebarTerminal(closingTerminalId: string) {
+  const allTerminals = buildTerminalList();
+  const currentIdx = allTerminals.findIndex((t) => t.terminalId === closingTerminalId);
+  if (currentIdx === -1) return null;
+  return allTerminals[currentIdx + 1] ?? allTerminals[currentIdx - 1] ?? null;
+}
+
 /** Simulate the lastFocusedPane subscription from App.tsx. */
 function trackLastFocusedPane(lastFocusedPane: Map<string, string>) {
   return useTerminalStore.subscribe((state) => {
@@ -294,6 +301,41 @@ describe("Cross-store integration", () => {
 
     expect(useProjectStore.getState().projects[projectId]).toBeUndefined();
     expect(useProjectStore.getState().activeProjectId).toBeNull();
+  });
+
+  it("close active tab selects immediate next sidebar tab", () => {
+    const proj = createTestProject({ terminalCount: 3 });
+    const [t1, t2, t3] = proj.terminalIds;
+    useTerminalStore.getState().setActiveTerminal(t2);
+    useProjectStore.getState().setActiveProject(proj.projectId);
+
+    const next = findAdjacentSidebarTerminal(t2);
+    if (next) {
+      useProjectStore.getState().setActiveProject(next.projectId);
+      useTerminalStore.getState().setActiveTerminal(next.terminalId);
+    }
+    useTerminalStore.getState().removeSession(t2);
+
+    expect(useTerminalStore.getState().activeTerminalId).toBe(t3);
+    expect(useProjectStore.getState().activeProjectId).toBe(proj.projectId);
+    expect(useTerminalStore.getState().sessions[t1]).toBeDefined();
+    expect(useTerminalStore.getState().sessions[t3]).toBeDefined();
+  });
+
+  it("close last sidebar tab falls back to previous tab", () => {
+    const proj = createTestProject({ terminalCount: 3 });
+    const [, t2, t3] = proj.terminalIds;
+    useTerminalStore.getState().setActiveTerminal(t3);
+    useProjectStore.getState().setActiveProject(proj.projectId);
+
+    const next = findAdjacentSidebarTerminal(t3);
+    if (next) {
+      useProjectStore.getState().setActiveProject(next.projectId);
+      useTerminalStore.getState().setActiveTerminal(next.terminalId);
+    }
+    useTerminalStore.getState().removeSession(t3);
+
+    expect(useTerminalStore.getState().activeTerminalId).toBe(t2);
   });
 
   it("move terminal between projects: tree updated, session/layout unchanged", () => {

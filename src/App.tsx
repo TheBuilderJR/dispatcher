@@ -22,6 +22,11 @@ type DialogMode =
   | { type: "new-project-with-terminal" }
   | null;
 
+interface SidebarTerminalRef {
+  terminalId: string;
+  projectId: string;
+}
+
 export default function App() {
   const projects = useProjectStore((s) => s.projects);
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
@@ -42,6 +47,38 @@ export default function App() {
   useFileDrop();
 
   const activeProject = activeProjectId ? projects[activeProjectId] : null;
+
+  const buildSidebarTerminalList = useCallback((): SidebarTerminalRef[] => {
+    const { projects: allProjects, projectOrder, nodes: currentNodes } = useProjectStore.getState();
+    const sessions = useTerminalStore.getState().sessions;
+    const allTerminals: SidebarTerminalRef[] = [];
+
+    for (const projId of projectOrder) {
+      const proj = allProjects[projId];
+      if (!proj || !proj.expanded) continue;
+      const rootNode = currentNodes[proj.rootGroupId];
+      if (!rootNode?.children) continue;
+
+      for (const childId of rootNode.children) {
+        const child = currentNodes[childId];
+        if (child?.type === "terminal" && child.terminalId && sessions[child.terminalId]) {
+          allTerminals.push({ terminalId: child.terminalId, projectId: projId });
+        }
+      }
+    }
+
+    return allTerminals;
+  }, []);
+
+  const findAdjacentSidebarTerminal = useCallback(
+    (terminalId: string): SidebarTerminalRef | null => {
+      const allTerminals = buildSidebarTerminalList();
+      const idx = allTerminals.findIndex((t) => t.terminalId === terminalId);
+      if (idx === -1) return null;
+      return allTerminals[idx + 1] ?? allTerminals[idx - 1] ?? null;
+    },
+    [buildSidebarTerminalList]
+  );
 
   const [dialog, setDialog] = useState<DialogMode>(null);
   const [sidebarWidth, setSidebarWidth] = useState(240);
@@ -321,6 +358,14 @@ export default function App() {
       const isSolePane = !layout || layout.type === "terminal";
 
       if (isTabRoot && isSolePane) {
+        const activeTermId = useTerminalStore.getState().activeTerminalId;
+        const nextSidebarTerminal =
+          activeTermId === terminalId ? findAdjacentSidebarTerminal(terminalId) : null;
+        if (nextSidebarTerminal) {
+          useProjectStore.getState().setActiveProject(nextSidebarTerminal.projectId);
+          useTerminalStore.getState().setActiveTerminal(nextSidebarTerminal.terminalId);
+        }
+
         // Closing the only pane in a tab: close the entire tab.
         closeTerminal(terminalId).catch(() => {});
         disposeTerminalInstance(terminalId);
@@ -395,7 +440,16 @@ export default function App() {
         removeProject(activeProject.id);
       }
     },
-    [activeProject, removeTerminalFromLayout, removeLayout, removeSession, removeChildFromNode, removeNode, removeProject]
+    [
+      activeProject,
+      findAdjacentSidebarTerminal,
+      removeTerminalFromLayout,
+      removeLayout,
+      removeSession,
+      removeChildFromNode,
+      removeNode,
+      removeProject,
+    ]
   );
 
   // Find the layout key (tab root terminal ID) for the currently active terminal.
@@ -508,23 +562,7 @@ export default function App() {
     // Cycle terminals in sidebar: Cmd+Shift+] (next) / Cmd+Shift+[ (prev)
     if (isMeta && e.shiftKey && (e.code === "BracketRight" || e.code === "BracketLeft")) {
       e.preventDefault();
-      const { projects: allProjects, projectOrder, nodes: currentNodes } = useProjectStore.getState();
-      // Build flat list of { terminalId, projectId } across all projects in sidebar order
-      const sessions = useTerminalStore.getState().sessions;
-      const allTerminals: { terminalId: string; projectId: string }[] = [];
-      for (const projId of projectOrder) {
-        const proj = allProjects[projId];
-        if (!proj || !proj.expanded) continue;
-        const rootNode = currentNodes[proj.rootGroupId];
-        if (!rootNode?.children) continue;
-        for (const childId of rootNode.children) {
-          const child = currentNodes[childId];
-          // Match sidebar visibility: TerminalNode returns null when session is missing
-          if (child?.type === "terminal" && child.terminalId && sessions[child.terminalId]) {
-            allTerminals.push({ terminalId: child.terminalId, projectId: projId });
-          }
-        }
-      }
+      const allTerminals = buildSidebarTerminalList();
       if (allTerminals.length < 2) return;
       const activeTermId = useTerminalStore.getState().activeTerminalId;
       let currentIdx = activeTermId ? allTerminals.findIndex((t) => t.terminalId === activeTermId) : -1;
