@@ -38,6 +38,29 @@ const createdPtys = new Set<string>();
 const writeBuffers = new Map<string, string[]>();
 const writeRafs = new Map<string, number>();
 
+const WEBGL_OPT_IN_STORAGE_KEY = "dispatcher.webgl.enabled";
+
+function readWebglEnabledPreference(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(WEBGL_OPT_IN_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+let webglEnabled = readWebglEnabledPreference();
+
+function persistWebglEnabled(enabled: boolean) {
+  webglEnabled = enabled;
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(WEBGL_OPT_IN_STORAGE_KEY, enabled ? "1" : "0");
+  } catch {
+    // Ignore storage failures (private mode, disabled storage, etc.).
+  }
+}
+
 function batchedWrite(terminalId: string, data: string) {
   let buffer = writeBuffers.get(terminalId);
   if (!buffer) {
@@ -70,16 +93,12 @@ function disposeWriteBatch(terminalId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// WebGL addon — load with automatic recovery on context loss.
-//
-// High-throughput programs (e.g. Claude Code) can cause repeated WebGL context
-// losses.  After MAX_WEBGL_FAILURES consecutive failures we stop retrying and
-// stay on the canvas renderer.  A periodic probe re-attempts WebGL later so
-// transient GPU pressure doesn't permanently disable hardware acceleration.
+// WebGL addon policy:
+// - default off (opt-in only via localStorage key dispatcher.webgl.enabled=1)
+// - if enabled, disable automatically on first context loss for safety
 // ---------------------------------------------------------------------------
 
 const MAX_WEBGL_FAILURES = 3;
-const WEBGL_RETRY_MS = 1000;
 const WEBGL_PROBE_MS = 30_000;
 
 /** Per-terminal WebGL failure state. */
@@ -87,6 +106,8 @@ const webglFailures = new Map<Terminal, number>();
 const webglProbeTimers = new Map<Terminal, ReturnType<typeof setTimeout>>();
 
 function loadWebGLAddon(xterm: Terminal) {
+  if (!webglEnabled) return;
+
   const failures = webglFailures.get(xterm) ?? 0;
 
   if (failures >= MAX_WEBGL_FAILURES) {
@@ -99,12 +120,12 @@ function loadWebGLAddon(xterm: Terminal) {
     const addon = new WebglAddon();
     addon.onContextLoss(() => {
       addon.dispose();
-      webglFailures.set(xterm, (webglFailures.get(xterm) ?? 0) + 1);
-      setTimeout(() => {
-        loadWebGLAddon(xterm);
-        // Repaint all rows so any corruption from the lost context is cleared.
-        xterm.refresh(0, xterm.rows - 1);
-      }, WEBGL_RETRY_MS);
+      // Any context loss means WebGL is unstable on this machine/session.
+      // Disable it persistently and stay on the safer canvas renderer.
+      persistWebglEnabled(false);
+      webglFailures.set(xterm, MAX_WEBGL_FAILURES);
+      clearWebGLProbe(xterm);
+      xterm.refresh(0, xterm.rows - 1);
     });
     xterm.loadAddon(addon);
     // Successful load — reset failure counter and cancel any pending probe.
@@ -254,6 +275,10 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
     xtermRef.current = inst.xterm;
     fitAddonRef.current = inst.fitAddon;
     searchAddonRef.current = inst.searchAddon;
+
+    // Ensure remounted terminals always pick up the latest font size. Without
+    // this, hidden tabs can remount with stale metrics and render incorrectly.
+    inst.xterm.options.fontSize = useFontSizeStore.getState().fontSize;
 
     // Defer fit() to the next animation frame so the browser has laid out the
     // container and fit() can measure accurate dimensions.  Without this, the

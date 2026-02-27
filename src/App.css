@@ -554,7 +554,6 @@ html, body, #root {
 .terminal-container {
   flex: 1;
   overflow: hidden;
-  padding: 4px;
 }
 
 /* ===== Terminal Search ===== */

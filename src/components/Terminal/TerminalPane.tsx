@@ -29,6 +29,15 @@ export function TerminalPane({
 
   const resizeRef = useResizeObserver(handleResize);
 
+  // Opening/closing the search bar changes the terminal viewport height.
+  // Trigger a fit so rows/cols stay in sync with the actual visible area.
+  useEffect(() => {
+    const rafId = requestAnimationFrame(() => {
+      fit();
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [searchOpen, fit]);
+
   const openSearch = useCallback(() => {
     setSearchOpen(true);
     setTimeout(() => searchInputRef.current?.focus(), 0);
