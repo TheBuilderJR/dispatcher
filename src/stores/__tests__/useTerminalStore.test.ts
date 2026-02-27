@@ -41,6 +41,14 @@ describe("useTerminalStore", () => {
     });
   });
 
+  describe("updateCwd", () => {
+    it("updates cwd for an existing session", () => {
+      useTerminalStore.getState().addSession("t1", "First");
+      useTerminalStore.getState().updateCwd("t1", "/tmp/project");
+      expect(useTerminalStore.getState().sessions["t1"].cwd).toBe("/tmp/project");
+    });
+  });
+
   describe("persist merge", () => {
     it("preserves notes across sessions", () => {
       const { merge } = (useTerminalStore as any).persist.getOptions();

@@ -296,6 +296,10 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
 
     // Forward user input to PTY.
     const dataDisposable = inst.xterm.onData((data) => {
+      // Any submitted command may change cwd; force a fresh lookup on next spawn.
+      if (data.includes("\r")) {
+        useTerminalStore.getState().updateCwd(terminalId, undefined);
+      }
       writeTerminal(terminalId, data).catch(() => {});
     });
 

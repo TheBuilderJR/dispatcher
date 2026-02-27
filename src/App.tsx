@@ -38,6 +38,7 @@ export default function App() {
   const removeChildFromNode = useProjectStore((s) => s.removeChildFromNode);
   const nodes = useProjectStore((s) => s.nodes);
   const addSession = useTerminalStore((s) => s.addSession);
+  const updateSessionCwd = useTerminalStore((s) => s.updateCwd);
   const removeSession = useTerminalStore((s) => s.removeSession);
   const initLayout = useLayoutStore((s) => s.initLayout);
   const splitTerminal = useLayoutStore((s) => s.splitTerminal);
@@ -155,13 +156,33 @@ export default function App() {
 
 
   const createTerminalInProject = useCallback(
-    (projectId: string, terminalName: string) => {
+    async (projectId: string, terminalName: string, sourceTerminalId?: string) => {
       const project = projects[projectId];
       if (!project) return;
 
       // Expand the project if it's minimized so the new terminal is visible
       if (!project.expanded) {
         useProjectStore.getState().toggleProjectExpanded(projectId);
+      }
+
+      const allNodes = useProjectStore.getState().nodes;
+      const rootNode = allNodes[project.rootGroupId];
+      const fallbackSourceTerminalId = rootNode?.children
+        ? [...rootNode.children]
+            .reverse()
+            .map((childId) => allNodes[childId])
+            .find((child) => child?.type === "terminal" && child.terminalId)?.terminalId
+        : undefined;
+      const cwdSourceTerminalId = sourceTerminalId ?? fallbackSourceTerminalId;
+
+      let inheritedCwd = cwdSourceTerminalId
+        ? useTerminalStore.getState().sessions[cwdSourceTerminalId]?.cwd
+        : undefined;
+      if (!inheritedCwd && cwdSourceTerminalId) {
+        inheritedCwd = (await getTerminalCwd(cwdSourceTerminalId).catch(() => null)) ?? undefined;
+        if (inheritedCwd) {
+          updateSessionCwd(cwdSourceTerminalId, inheritedCwd);
+        }
       }
 
       const terminalId = generateId();
@@ -176,37 +197,17 @@ export default function App() {
       });
       addChildToNode(project.rootGroupId, nodeId);
 
-      addSession(terminalId, terminalName);
+      addSession(terminalId, terminalName, inheritedCwd);
       // Each tab terminal gets its own standalone layout
       initLayout(terminalId, terminalId);
-
-      // Query the actual cwd from an existing terminal in this project
-      // (like split pane does) and cd into it once the new PTY is ready.
-      const allNodes = useProjectStore.getState().nodes;
-      const rootNode = allNodes[project.rootGroupId];
-      if (rootNode?.children) {
-        for (const childId of rootNode.children) {
-          const child = allNodes[childId];
-          if (child?.type === "terminal" && child.terminalId && child.terminalId !== terminalId) {
-            getTerminalCwd(child.terminalId)
-              .then((cwd) => {
-                if (cwd) {
-                  const escaped = cwd.replace(/'/g, "'\\''");
-                  writeTerminal(terminalId, ` cd '${escaped}' && clear\n`).catch(() => {});
-                }
-              })
-              .catch(() => {});
-            break;
-          }
-        }
-      }
     },
-    [projects, addNode, addChildToNode, addSession, initLayout]
+    [projects, addNode, addChildToNode, addSession, initLayout, updateSessionCwd]
   );
 
   const handleNewTerminal = useCallback(() => {
     if (activeProject) {
-      createTerminalInProject(activeProject.id, "Shell");
+      const activeTerminalId = useTerminalStore.getState().activeTerminalId ?? undefined;
+      createTerminalInProject(activeProject.id, "Shell", activeTerminalId);
     } else {
       setDialog({ type: "new-project-with-terminal" });
     }
@@ -218,7 +219,10 @@ export default function App() {
 
   const handleNewTerminalInProject = useCallback(
     (projectId: string) => {
-      createTerminalInProject(projectId, "Shell");
+      const activeProjectId = useProjectStore.getState().activeProjectId;
+      const activeTerminalId = useTerminalStore.getState().activeTerminalId ?? undefined;
+      const sourceTerminalId = activeProjectId === projectId ? activeTerminalId : undefined;
+      createTerminalInProject(projectId, "Shell", sourceTerminalId);
     },
     [createTerminalInProject]
   );

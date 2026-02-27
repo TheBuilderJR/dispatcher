@@ -11,6 +11,7 @@ interface TerminalStore {
   setActiveTerminal: (id: string | null) => void;
   updateTitle: (id: string, title: string) => void;
   updateNotes: (id: string, notes: string) => void;
+  updateCwd: (id: string, cwd?: string) => void;
 }
 
 let terminalCounter = 0;
@@ -69,6 +70,15 @@ export const useTerminalStore = create<TerminalStore>()(
           if (!session) return state;
           return {
             sessions: { ...state.sessions, [id]: { ...session, notes } },
+          };
+        }),
+
+      updateCwd: (id, cwd) =>
+        set((state) => {
+          const session = state.sessions[id];
+          if (!session) return state;
+          return {
+            sessions: { ...state.sessions, [id]: { ...session, cwd } },
           };
         }),
     }),
