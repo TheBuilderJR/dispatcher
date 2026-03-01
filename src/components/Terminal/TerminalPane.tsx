@@ -29,6 +29,13 @@ export function TerminalPane({
 
   const resizeRef = useResizeObserver(handleResize);
 
+  // Re-fit on window resize (e.g. maximising/restoring the window).
+  useEffect(() => {
+    const onResize = () => fit();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [fit]);
+
   // Opening/closing the search bar changes the terminal viewport height.
   // Trigger a fit so rows/cols stay in sync with the actual visible area.
   useEffect(() => {

@@ -163,6 +163,11 @@ function cleanupWebGLState(xterm: Terminal) {
   clearWebGLProbe(xterm);
 }
 
+/** Focus the xterm instance for a given terminal (e.g. after renaming). */
+export function focusTerminalInstance(terminalId: string) {
+  instances.get(terminalId)?.xterm.focus();
+}
+
 /** Dispose an xterm instance and its PTY tracking when a terminal is truly closed. */
 export function disposeTerminalInstance(terminalId: string) {
   const inst = instances.get(terminalId);
@@ -254,11 +259,11 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
         }
 
         // App-level shortcuts — let them bubble to the global handler
-        if (e.metaKey && ["t", "n", "d", "w", "f", "u", "=", "-", "0"].includes(e.key)) {
+        if (e.metaKey && ["t", "n", "d", "w", "f", "u", "r", "b", "=", "-", "0"].includes(e.key)) {
           return false;
         }
-        // Cycle terminals: Cmd+Shift+[ / Cmd+Shift+]
-        if (e.metaKey && e.shiftKey && (e.code === "BracketLeft" || e.code === "BracketRight")) {
+        // Bracket shortcuts: Cmd+]/[ (projects) and Cmd+Shift+]/[ (terminals)
+        if (e.metaKey && (e.code === "BracketLeft" || e.code === "BracketRight")) {
           return false;
         }
 

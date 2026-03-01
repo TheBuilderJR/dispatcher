@@ -205,13 +205,15 @@ export default function App() {
   );
 
   const handleNewTerminal = useCallback(() => {
-    if (activeProject) {
+    const currentProjectId = useProjectStore.getState().activeProjectId;
+    const currentProject = currentProjectId ? useProjectStore.getState().projects[currentProjectId] : null;
+    if (currentProject) {
       const activeTerminalId = useTerminalStore.getState().activeTerminalId ?? undefined;
-      createTerminalInProject(activeProject.id, "Shell", activeTerminalId);
+      createTerminalInProject(currentProject.id, "Shell", activeTerminalId);
     } else {
       setDialog({ type: "new-project-with-terminal" });
     }
-  }, [activeProject, createTerminalInProject]);
+  }, [createTerminalInProject]);
 
   const handleNewProject = useCallback(() => {
     setDialog({ type: "new-project" });
@@ -550,6 +552,16 @@ export default function App() {
         useProjectStore.getState().promoteChild(tabRoot || activeTermId);
       }
     }
+    // Demote active tab to bottom of its project: Cmd+B / Ctrl+B
+    if (isMeta && !e.shiftKey && e.key === "b") {
+      e.preventDefault();
+      const activeTermId = useTerminalStore.getState().activeTerminalId;
+      if (activeTermId) {
+        const layouts = useLayoutStore.getState().layouts;
+        const tabRoot = findLayoutKeyForTerminal(layouts, activeTermId);
+        useProjectStore.getState().demoteChild(tabRoot || activeTermId);
+      }
+    }
     // Font size: Cmd+= / Cmd+- / Cmd+0
     if (isMeta && e.key === "=") {
       e.preventDefault();
@@ -562,6 +574,40 @@ export default function App() {
     if (isMeta && e.key === "0") {
       e.preventDefault();
       useFontSizeStore.getState().reset();
+    }
+    // Cycle projects: Cmd+] (next) / Cmd+[ (prev)
+    if (isMeta && !e.shiftKey && (e.code === "BracketRight" || e.code === "BracketLeft")) {
+      e.preventDefault();
+      const { projectOrder, projects: allProjects, activeProjectId: currentProjId } = useProjectStore.getState();
+      if (projectOrder.length < 2) return;
+      const currentIdx = currentProjId ? projectOrder.indexOf(currentProjId) : -1;
+      const forward = e.code === "BracketRight";
+      let nextIdx: number;
+      if (currentIdx === -1) {
+        nextIdx = forward ? 0 : projectOrder.length - 1;
+      } else if (forward) {
+        nextIdx = currentIdx >= projectOrder.length - 1 ? 0 : currentIdx + 1;
+      } else {
+        nextIdx = currentIdx <= 0 ? projectOrder.length - 1 : currentIdx - 1;
+      }
+      const nextProjId = projectOrder[nextIdx];
+      useProjectStore.getState().setActiveProject(nextProjId);
+      // Activate first terminal in the target project
+      const nextProj = allProjects[nextProjId];
+      if (nextProj) {
+        const currentNodes = useProjectStore.getState().nodes;
+        const rootNode = currentNodes[nextProj.rootGroupId];
+        if (rootNode?.children?.length) {
+          for (const childId of rootNode.children) {
+            const child = currentNodes[childId];
+            if (child?.type === "terminal" && child.terminalId) {
+              useTerminalStore.getState().setActiveTerminal(child.terminalId);
+              break;
+            }
+          }
+        }
+      }
+      return;
     }
     // Cycle terminals in sidebar: Cmd+Shift+] (next) / Cmd+Shift+[ (prev)
     if (isMeta && e.shiftKey && (e.code === "BracketRight" || e.code === "BracketLeft")) {

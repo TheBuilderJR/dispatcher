@@ -16,6 +16,7 @@ interface ProjectStore {
   reorderProject: (projectId: string, targetProjectId: string, position: "before" | "after") => void;
   reorderChild: (parentNodeId: string, childId: string, targetChildId: string, position: "before" | "after") => void;
   promoteChild: (terminalId: string) => void;
+  demoteChild: (terminalId: string) => void;
 
   addNode: (node: TreeNode) => void;
   removeNode: (id: string) => void;
@@ -121,6 +122,26 @@ export const useProjectStore = create<ProjectStore>()(
             nodes: {
               ...state.nodes,
               [node.parentId]: { ...parent, children: [nodeId, ...children] },
+            },
+          };
+        }),
+
+      demoteChild: (terminalId) =>
+        set((state) => {
+          const nodeEntry = Object.entries(state.nodes).find(
+            ([, node]) => node.type === "terminal" && node.terminalId === terminalId
+          );
+          if (!nodeEntry) return state;
+          const [nodeId, node] = nodeEntry;
+          if (!node.parentId) return state;
+          const parent = state.nodes[node.parentId];
+          if (!parent?.children) return state;
+          if (parent.children[parent.children.length - 1] === nodeId) return state;
+          const children = parent.children.filter((c) => c !== nodeId);
+          return {
+            nodes: {
+              ...state.nodes,
+              [node.parentId]: { ...parent, children: [...children, nodeId] },
             },
           };
         }),

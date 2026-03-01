@@ -2,7 +2,9 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { StatusDot } from "../common/StatusDot";
 import { ContextMenu } from "../common/ContextMenu";
 import { useTerminalStore } from "../../stores/useTerminalStore";
+import { useProjectStore } from "../../stores/useProjectStore";
 import { startDrag } from "../../lib/dragState";
+import { focusTerminalInstance } from "../../hooks/useTerminalBridge";
 
 interface TerminalNodeProps {
   terminalId: string;
@@ -56,6 +58,10 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
     const trimmed = draft.trim();
     if (trimmed && trimmed !== session.title) {
       updateTitle(terminalId, trimmed);
+    }
+    const activeId = useTerminalStore.getState().activeTerminalId;
+    if (activeId) {
+      requestAnimationFrame(() => focusTerminalInstance(activeId));
     }
   };
 
@@ -123,6 +129,26 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
           y={menu.y}
           onClose={() => setMenu(null)}
           items={[
+            {
+              label: "Move to Top",
+              icon: (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M7 11V3M4 6L7 3L10 6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              ),
+              shortcut: "⌘U",
+              onClick: () => useProjectStore.getState().promoteChild(terminalId),
+            },
+            {
+              label: "Move to Bottom",
+              icon: (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M7 3V11M4 8L7 11L10 8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              ),
+              shortcut: "⌘B",
+              onClick: () => useProjectStore.getState().demoteChild(terminalId),
+            },
             {
               label: "Rename",
               icon: (

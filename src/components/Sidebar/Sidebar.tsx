@@ -3,6 +3,7 @@ import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { ProjectNode } from "./ProjectNode";
 import { ContextMenu } from "../common/ContextMenu";
+import { HotkeyHelp } from "../common/HotkeyHelp";
 import { registerDragCallbacks } from "../../lib/dragState";
 
 interface SidebarProps {
@@ -45,6 +46,7 @@ export function Sidebar({
   }, []);
 
   const [bgMenu, setBgMenu] = useState<{ x: number; y: number } | null>(null);
+  const [showHelp, setShowHelp] = useState(false);
 
   const projectList = projectOrder.map((id) => projects[id]).filter(Boolean);
 
@@ -127,6 +129,11 @@ export function Sidebar({
           />
         ))}
       </div>
+      <div className="sidebar-footer">
+        <button className="sidebar-help-btn" onClick={() => setShowHelp(true)} title="Keyboard Shortcuts">
+          ?
+        </button>
+      </div>
       {bgMenu && (
         <ContextMenu
           x={bgMenu.x}
@@ -135,6 +142,7 @@ export function Sidebar({
           items={bgMenuItems}
         />
       )}
+      {showHelp && <HotkeyHelp onClose={() => setShowHelp(false)} />}
     </div>
   );
 }

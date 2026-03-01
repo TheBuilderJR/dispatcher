@@ -118,6 +118,36 @@ html, body, #root {
   flex: 1;
   overflow-y: auto;
   padding: 8px 0;
+  min-height: 0;
+}
+
+.sidebar-footer {
+  padding: 8px 16px;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-help-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.sidebar-help-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
 }
 
 .sidebar-empty {
@@ -851,4 +881,65 @@ html, body, #root {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-secondary);
+}
+
+/* ===== Hotkey Help Dialog ===== */
+.hotkey-help-dialog {
+  width: 340px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.hotkey-help-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.hotkey-help-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+
+.hotkey-help-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.hotkey-help-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hotkey-help-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 0;
+}
+
+.hotkey-help-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.hotkey-help-key {
+  font-family: "Menlo", "Monaco", monospace;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 2px 8px;
+  min-width: 32px;
+  text-align: center;
 }
