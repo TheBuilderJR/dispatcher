@@ -154,6 +154,10 @@ impl PtyManager {
 
         let mut cmd = CommandBuilder::new_default_prog();
         cmd.env("TERM", "xterm-256color");
+        // Infinite shell history (bash + zsh)
+        cmd.env("HISTSIZE", "999999999");
+        cmd.env("HISTFILESIZE", "999999999"); // bash
+        cmd.env("SAVEHIST", "999999999"); // zsh
 
         let child = pair.slave.spawn_command(cmd).map_err(PtyError::from)?;
         drop(pair.slave);
@@ -364,6 +368,10 @@ impl PtyManager {
 
         let mut cmd = CommandBuilder::new_default_prog();
         cmd.env("TERM", "xterm-256color");
+        // Infinite shell history (bash + zsh)
+        cmd.env("HISTSIZE", "999999999");
+        cmd.env("HISTFILESIZE", "999999999"); // bash
+        cmd.env("SAVEHIST", "999999999"); // zsh
         if let Some(ref dir) = cwd {
             cmd.cwd(dir);
         }
