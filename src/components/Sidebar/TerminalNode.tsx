@@ -39,7 +39,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
     }
   }, [session]);
 
-  // Listen for Cmd+R rename shortcut dispatched from App
+  // Listen for the global rename shortcut dispatched from App
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail;

@@ -8,6 +8,7 @@ import { useTerminalStore } from "./stores/useTerminalStore";
 import { useFontStore } from "./stores/useFontStore";
 import { useColorSchemeStore } from "./stores/useColorSchemeStore";
 import { applyUIColors } from "./lib/colorSchemes";
+import { shouldBypassAppShortcutsForTerminal } from "./lib/keyboardShortcuts";
 import { findTerminalIds, findLayoutKeyForTerminal, findSiblingTerminalId } from "./lib/layoutUtils";
 import { closeTerminal, warmPool, refreshPool, getTerminalCwd, writeTerminal } from "./lib/tauriCommands";
 import { disposeTerminalInstance } from "./hooks/useTerminalBridge";
@@ -543,8 +544,12 @@ export default function App() {
     if (dialog) return; // Don't handle shortcuts while dialog is open
     // On macOS use Cmd for app shortcuts so Ctrl passes through to the
     // terminal (Ctrl+R reverse search, Ctrl+D EOF, Ctrl+W delete word, etc.).
-    // On other platforms fall back to Ctrl as the app modifier.
+    // On other platforms fall back to Ctrl as the app modifier, except when a
+    // raw Ctrl+letter chord originated inside a terminal pane.
     const isMac = navigator.platform.startsWith("Mac");
+    if (!isMac && shouldBypassAppShortcutsForTerminal(e)) {
+      return;
+    }
     const isMeta = isMac ? e.metaKey : e.ctrlKey;
 
     if (isMeta && !e.shiftKey && e.key === "t") {
@@ -580,8 +585,9 @@ export default function App() {
         handleClosePane(activeTermId);
       }
     }
-    // Rename active tab: Cmd+R / Ctrl+R
-    if (isMeta && !e.shiftKey && e.key === "r") {
+    // Rename active tab: Cmd+R only.
+    // Keep bare Ctrl+R reserved for terminal reverse search.
+    if (e.metaKey && !e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "r") {
       e.preventDefault();
       const activeTermId = useTerminalStore.getState().activeTerminalId;
       if (activeTermId) {

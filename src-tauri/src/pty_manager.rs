@@ -1,11 +1,142 @@
 use crate::errors::PtyError;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
+use std::fs;
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{ipc::Channel, AppHandle, Emitter};
 
 const MAX_POOL_SIZE: usize = 3;
+
+fn shell_basename(shell: &str) -> &str {
+    shell.rsplit('/').next().unwrap_or(shell)
+}
+
+fn apply_shell_env(cmd: &mut CommandBuilder) {
+    // Start each PTY as a clean terminal session instead of inheriting
+    // emulator-specific parent metadata from Terminal.app/iTerm/tmux.
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("TERM_PROGRAM", "Dispatcher");
+    cmd.env_remove("TERM_PROGRAM_VERSION");
+    cmd.env_remove("TERM_SESSION_ID");
+    cmd.env_remove("COLORTERM");
+    cmd.env_remove("ITERM_PROFILE");
+    cmd.env_remove("ITERM_SESSION_ID");
+    cmd.env_remove("LC_TERMINAL");
+    cmd.env_remove("LC_TERMINAL_VERSION");
+    cmd.env_remove("TERMINAL_EMULATOR");
+    cmd.env_remove("TMUX");
+    cmd.env_remove("TMUX_PANE");
+    cmd.env_remove("STY");
+    cmd.env_remove("VTE_VERSION");
+    cmd.env_remove("WT_SESSION");
+
+    match shell_basename(&cmd.get_shell()) {
+        // Keep bash history effectively unlimited.
+        "bash" => {
+            cmd.env("HISTSIZE", "999999999");
+            cmd.env("HISTFILESIZE", "999999999");
+        }
+        // Run zsh through a small proxy ZDOTDIR so Dispatcher can preserve the
+        // user's existing startup files while restoring the standard Ctrl+R
+        // history search binding in app-spawned sessions. Other shells keep
+        // their normal startup behavior unless they need a targeted fix.
+        "zsh" => {
+            if let Err(err) = configure_zsh_startup(cmd) {
+                eprintln!("dispatcher: failed to configure zsh startup shim: {err}");
+            }
+        }
+        _ => {}
+    }
+}
+
+fn configure_zsh_startup(cmd: &mut CommandBuilder) -> Result<(), PtyError> {
+    let home = cmd
+        .get_env("HOME")
+        .and_then(|v| v.to_str())
+        .ok_or_else(|| PtyError::from(String::from("HOME is not set")))?
+        .to_owned();
+
+    let original_zdotdir = cmd
+        .get_env("ZDOTDIR")
+        .and_then(|v| v.to_str())
+        .filter(|v| !v.is_empty())
+        .unwrap_or(&home)
+        .to_owned();
+    let original_histfile = cmd
+        .get_env("HISTFILE")
+        .and_then(|v| v.to_str())
+        .filter(|v| !v.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| Path::new(&original_zdotdir).join(".zsh_history").to_string_lossy().into_owned());
+
+    let shim_dir = Path::new(&home).join(".dispatcher").join("zsh");
+    fs::create_dir_all(&shim_dir).map_err(PtyError::from)?;
+
+    write_zsh_shim_file(
+        &shim_dir.join(".zshenv"),
+        r#"if [ -n "${DISPATCHER_ORIG_ZDOTDIR:-}" ] && [ -r "${DISPATCHER_ORIG_ZDOTDIR}/.zshenv" ]; then
+  . "${DISPATCHER_ORIG_ZDOTDIR}/.zshenv"
+fi
+"#,
+    )?;
+    write_zsh_shim_file(
+        &shim_dir.join(".zprofile"),
+        r#"if [ -n "${DISPATCHER_ORIG_ZDOTDIR:-}" ] && [ -r "${DISPATCHER_ORIG_ZDOTDIR}/.zprofile" ]; then
+  . "${DISPATCHER_ORIG_ZDOTDIR}/.zprofile"
+fi
+"#,
+    )?;
+    write_zsh_shim_file(
+        &shim_dir.join(".zshrc"),
+        r#"if [ -n "${DISPATCHER_ORIG_HISTFILE:-}" ]; then
+  HISTFILE="${DISPATCHER_ORIG_HISTFILE}"
+  export HISTFILE
+fi
+if [ -n "${DISPATCHER_ORIG_ZDOTDIR:-}" ] && [ -r "${DISPATCHER_ORIG_ZDOTDIR}/.zshrc" ]; then
+  . "${DISPATCHER_ORIG_ZDOTDIR}/.zshrc"
+fi
+if [ -n "${HISTFILE:-}" ] && [ -r "${HISTFILE}" ]; then
+  fc -R "${HISTFILE}" 2>/dev/null || true
+fi
+bindkey '^R' history-incremental-search-backward 2>/dev/null || true
+bindkey -M emacs '^R' history-incremental-search-backward 2>/dev/null || true
+bindkey -M viins '^R' history-incremental-search-backward 2>/dev/null || true
+"#,
+    )?;
+    write_zsh_shim_file(
+        &shim_dir.join(".zlogin"),
+        r#"if [ -n "${DISPATCHER_ORIG_ZDOTDIR:-}" ] && [ -r "${DISPATCHER_ORIG_ZDOTDIR}/.zlogin" ]; then
+  . "${DISPATCHER_ORIG_ZDOTDIR}/.zlogin"
+fi
+"#,
+    )?;
+
+    cmd.env("DISPATCHER_ORIG_ZDOTDIR", &original_zdotdir);
+    cmd.env("DISPATCHER_ORIG_HISTFILE", &original_histfile);
+    cmd.env("ZDOTDIR", shim_dir.as_os_str());
+
+    Ok(())
+}
+
+fn write_zsh_shim_file(path: &PathBuf, content: &str) -> Result<(), PtyError> {
+    fs::write(path, content).map_err(PtyError::from)
+}
+
+fn clear_reprint_control_char(master: &dyn MasterPty) {
+    #[cfg(unix)]
+    if let Some(fd) = master.as_raw_fd() {
+        let mut termios = unsafe { std::mem::MaybeUninit::<libc::termios>::zeroed().assume_init() };
+        if unsafe { libc::tcgetattr(fd, &mut termios) } == 0 {
+            let disabled = libc::_POSIX_VDISABLE;
+            termios.c_cc[libc::VREPRINT] = disabled;
+            unsafe {
+                let _ = libc::tcsetattr(fd, libc::TCSANOW, &termios);
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // UTF-8 streaming helper
@@ -151,13 +282,10 @@ impl PtyManager {
                 pixel_height: 0,
             })
             .map_err(PtyError::from)?;
+        clear_reprint_control_char(&*pair.master);
 
         let mut cmd = CommandBuilder::new_default_prog();
-        cmd.env("TERM", "xterm-256color");
-        // Infinite shell history (bash + zsh)
-        cmd.env("HISTSIZE", "999999999");
-        cmd.env("HISTFILESIZE", "999999999"); // bash
-        cmd.env("SAVEHIST", "999999999"); // zsh
+        apply_shell_env(&mut cmd);
 
         let child = pair.slave.spawn_command(cmd).map_err(PtyError::from)?;
         drop(pair.slave);
@@ -365,13 +493,10 @@ impl PtyManager {
                 pixel_height: 0,
             })
             .map_err(|e| PtyError::from(e))?;
+        clear_reprint_control_char(&*pair.master);
 
         let mut cmd = CommandBuilder::new_default_prog();
-        cmd.env("TERM", "xterm-256color");
-        // Infinite shell history (bash + zsh)
-        cmd.env("HISTSIZE", "999999999");
-        cmd.env("HISTFILESIZE", "999999999"); // bash
-        cmd.env("SAVEHIST", "999999999"); // zsh
+        apply_shell_env(&mut cmd);
         if let Some(ref dir) = cwd {
             cmd.cwd(dir);
         }

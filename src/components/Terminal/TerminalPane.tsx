@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useTerminalBridge } from "../../hooks/useTerminalBridge";
 import { useResizeObserver } from "../../hooks/useResizeObserver";
 import { useTerminalStore } from "../../stores/useTerminalStore";
-import { writeTerminal } from "../../lib/tauriCommands";
 import { ContextMenu } from "../common/ContextMenu";
 
 interface TerminalPaneProps {
@@ -73,13 +72,18 @@ export function TerminalPane({
     [searchAddonRef]
   );
 
-  // Intercept Cmd+F on the pane
+  // Intercept Cmd+F / Escape on the pane, and forward Ctrl+letter
+  // combinations that macOS WKWebView swallows before xterm.js can
+  // process them.  Uses capture phase so it fires before xterm.
   useEffect(() => {
     const el = resizeRef.current;
     if (!el) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+      // Use Cmd on macOS, Ctrl on other platforms for search
+      const isMac = navigator.platform.startsWith("Mac");
+      const searchMod = isMac ? e.metaKey : e.ctrlKey;
+      if (searchMod && e.key === "f") {
         e.preventDefault();
         e.stopPropagation();
         openSearch();
@@ -90,21 +94,24 @@ export function TerminalPane({
         return;
       }
       // On macOS WKWebView, the Cocoa text input system swallows
-      // Ctrl+letter before xterm.js can process them.  Intercept in
-      // capture phase and send the control character directly to the PTY.
-      if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.length === 1) {
+      // Ctrl+letter keydown events before xterm.js can process them.
+      // Intercept in capture phase and inject the control character
+      // through xterm's paste() so it flows through the normal
+      // onData → writeTerminal pipeline (the same path as typing).
+      if (isMac && e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.length === 1) {
         const code = e.key.toUpperCase().charCodeAt(0);
         if (code >= 65 && code <= 90) {
+          const controlChar = String.fromCharCode(code - 64);
           e.preventDefault();
           e.stopPropagation();
-          writeTerminal(terminalId, String.fromCharCode(code - 64)).catch(() => {});
+          xtermRef.current?.input(controlChar, false);
         }
       }
     };
 
     el.addEventListener("keydown", handleKeyDown, true);
     return () => el.removeEventListener("keydown", handleKeyDown, true);
-  }, [openSearch, closeSearch, searchOpen, resizeRef]);
+  }, [openSearch, closeSearch, searchOpen, resizeRef, xtermRef]);
 
   const setActiveTerminal = useTerminalStore((s) => s.setActiveTerminal);
   const isActive = useTerminalStore((s) => s.activeTerminalId === terminalId);
