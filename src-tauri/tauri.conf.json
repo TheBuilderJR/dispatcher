@@ -28,7 +28,6 @@
         "height": 800,
         "resizable": true,
         "fullscreen": false,
-        "theme": "Dark",
         "dragDropEnabled": true
       }
     ],

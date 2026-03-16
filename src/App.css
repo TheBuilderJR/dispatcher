@@ -593,7 +593,7 @@ html, body, #root {
 }
 
 .terminal-pane-active {
-  border-color: var(--text-muted);
+  border-color: var(--border-color);
 }
 
 .terminal-pane.terminal-drop-target {

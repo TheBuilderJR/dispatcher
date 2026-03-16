@@ -1,3 +1,4 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ColorScheme, UIColors } from "../types/colorScheme";
 
 export const BUILTIN_SCHEMES: ColorScheme[] = [
@@ -348,9 +349,23 @@ const UI_CSS_VAR_MAP: Record<keyof UIColors, string> = {
   red: "--red",
 };
 
+// Determine if a UI color palette is "light" by checking the perceived
+// brightness of the primary background color.
+function isLightBackground(hex: string): boolean {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  // Rec. 709 relative luminance approximation
+  return r * 0.2126 + g * 0.7152 + b * 0.0722 > 128;
+}
+
 export function applyUIColors(colors: UIColors) {
   const style = document.documentElement.style;
   for (const [key, cssVar] of Object.entries(UI_CSS_VAR_MAP)) {
     style.setProperty(cssVar, colors[key as keyof UIColors]);
   }
+
+  // Sync the native window chrome (title bar) with the color scheme.
+  const theme = isLightBackground(colors.bgPrimary) ? "light" : "dark";
+  getCurrentWindow().setTheme(theme as "light" | "dark").catch(() => {});
 }
