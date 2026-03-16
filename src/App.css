@@ -599,6 +599,7 @@ html, body, #root {
 .terminal-container {
   flex: 1;
   overflow: hidden;
+  padding: 4px 0 0 4px;
 }
 
 /* ===== Terminal Search ===== */
