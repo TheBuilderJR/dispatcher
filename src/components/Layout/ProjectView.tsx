@@ -4,6 +4,23 @@ import { useTerminalStore } from "../../stores/useTerminalStore";
 import { DetailPanel } from "../Terminal/DetailPanel";
 import { SplitContainer } from "./SplitContainer";
 
+const DETAIL_PANEL_WIDTH_KEY = "dispatcher.detailPanelWidth";
+const DEFAULT_DETAIL_PANEL_WIDTH = 260;
+const MIN_DETAIL_PANEL_WIDTH = 180;
+const MAX_DETAIL_PANEL_WIDTH = 480;
+
+function clampDetailPanelWidth(width: number): number {
+  return Math.max(MIN_DETAIL_PANEL_WIDTH, Math.min(MAX_DETAIL_PANEL_WIDTH, width));
+}
+
+function getInitialDetailPanelWidth(): number {
+  if (typeof window === "undefined") return DEFAULT_DETAIL_PANEL_WIDTH;
+  const stored = Number(window.localStorage.getItem(DETAIL_PANEL_WIDTH_KEY));
+  return Number.isFinite(stored)
+    ? clampDetailPanelWidth(stored)
+    : DEFAULT_DETAIL_PANEL_WIDTH;
+}
+
 interface ProjectViewProps {
   layoutId: string;
   onSplitPane: (targetTerminalId: string, direction: "horizontal" | "vertical") => void;
@@ -13,7 +30,7 @@ interface ProjectViewProps {
 export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewProps) {
   const layout = useLayoutStore((s) => s.layouts[layoutId]);
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
-  const [detailWidth, setDetailWidth] = useState(260);
+  const [detailWidth, setDetailWidth] = useState(getInitialDetailPanelWidth);
   const [detailCollapsed, setDetailCollapsed] = useState(false);
 
   const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
@@ -22,8 +39,9 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
     const startWidth = detailWidth;
 
     const onMouseMove = (e: MouseEvent) => {
-      const newWidth = Math.max(180, Math.min(480, startWidth + (e.clientX - startX)));
+      const newWidth = clampDetailPanelWidth(startWidth + (e.clientX - startX));
       setDetailWidth(newWidth);
+      window.localStorage.setItem(DETAIL_PANEL_WIDTH_KEY, String(newWidth));
     };
 
     const onMouseUp = () => {
