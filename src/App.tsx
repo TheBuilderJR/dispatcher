@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useState, useRef } from "react";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { ProjectView } from "./components/Layout/ProjectView";
+import { KeyDebugOverlay } from "./components/common/KeyDebugOverlay";
 import { NameDialog } from "./components/common/NameDialog";
 import { useProjectStore } from "./stores/useProjectStore";
 import { useLayoutStore } from "./stores/useLayoutStore";
@@ -31,6 +32,10 @@ interface SidebarTerminalRef {
 }
 
 export default function App() {
+  const [showKeyDebug, setShowKeyDebug] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("dispatcher.keydebug.visible") === "1";
+  });
   const projects = useProjectStore((s) => s.projects);
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const addProject = useProjectStore((s) => s.addProject);
@@ -87,6 +92,10 @@ export default function App() {
   const [dialog, setDialog] = useState<DialogMode>(null);
   const [sidebarWidth, setSidebarWidth] = useState(240);
   const sidebarDividerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    window.localStorage.setItem("dispatcher.keydebug.visible", showKeyDebug ? "1" : "0");
+  }, [showKeyDebug]);
 
   const handleSidebarDividerMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -541,6 +550,12 @@ export default function App() {
   // (particularly noticeable when cycling wraps across projects).
   const keyDownRef = useRef<(e: KeyboardEvent) => void>(() => {});
   keyDownRef.current = (e: KeyboardEvent) => {
+    if (e.metaKey && e.shiftKey && e.code === "Slash") {
+      e.preventDefault();
+      setShowKeyDebug((value) => !value);
+      return;
+    }
+
     if (dialog) return; // Don't handle shortcuts while dialog is open
     // On macOS use Cmd for app shortcuts so Ctrl passes through to the
     // terminal (Ctrl+R reverse search, Ctrl+D EOF, Ctrl+W delete word, etc.).
@@ -767,6 +782,7 @@ export default function App() {
           onCancel={() => setDialog(null)}
         />
       )}
+      {showKeyDebug && <KeyDebugOverlay />}
     </div>
   );
 }

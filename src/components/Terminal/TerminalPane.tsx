@@ -1,5 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { sendSyntheticTerminalInput, useTerminalBridge } from "../../hooks/useTerminalBridge";
+import {
+  sendSyntheticTerminalInput,
+  suppressTransientFocusSequences,
+  useTerminalBridge,
+} from "../../hooks/useTerminalBridge";
 import { useResizeObserver } from "../../hooks/useResizeObserver";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { ContextMenu } from "../common/ContextMenu";
@@ -8,6 +12,12 @@ import {
   getMacOptionMetaSequence,
   suppressMacCtrlChordTextInput,
 } from "../../lib/keyboardShortcuts";
+import {
+  describeInputLikeEvent,
+  describeKeyboardEvent,
+  describeTerminalData,
+  pushKeyDebug,
+} from "../../lib/keyDebug";
 
 interface TerminalPaneProps {
   terminalId: string;
@@ -72,13 +82,18 @@ export function TerminalPane({
     const helperTextarea = eventTarget instanceof HTMLTextAreaElement ? eventTarget : null;
     if (helperTextarea) {
       helperTextarea.value = "";
-      helperTextarea.blur();
+      try {
+        helperTextarea.setSelectionRange(0, 0);
+      } catch {
+        // Ignore selection reset failures on hidden helper textareas.
+      }
     }
 
-    requestAnimationFrame(() => {
-      xtermRef.current?.focus();
+    pushKeyDebug(`terminal.meta-reset:${terminalId}`, {
+      hadHelperTextarea: helperTextarea !== null,
     });
-  }, [terminalId, xtermRef]);
+    suppressTransientFocusSequences(terminalId);
+  }, [terminalId]);
 
   const doSearch = useCallback(
     (query: string, direction: "next" | "prev" = "next") => {
@@ -103,6 +118,8 @@ export function TerminalPane({
     if (!el) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      pushKeyDebug(`terminal.capture:${terminalId}`, describeKeyboardEvent(e));
+
       // Use Cmd on macOS, Ctrl on other platforms for search
       const isMac = navigator.platform.startsWith("Mac");
       const searchMod = isMac ? e.metaKey : e.ctrlKey;
@@ -127,6 +144,10 @@ export function TerminalPane({
       if (isMac) {
         const controlChar = getCtrlLetterControlCharacter(e);
         if (controlChar) {
+          pushKeyDebug(`terminal.ctrl-sequence:${terminalId}`, {
+            event: describeKeyboardEvent(e),
+            data: describeTerminalData(controlChar),
+          });
           if (e.repeat) {
             e.preventDefault();
             e.stopPropagation();
@@ -149,6 +170,10 @@ export function TerminalPane({
 
         const metaSequence = getMacOptionMetaSequence(e);
         if (metaSequence) {
+          pushKeyDebug(`terminal.meta-sequence:${terminalId}`, {
+            event: describeKeyboardEvent(e),
+            data: describeTerminalData(metaSequence),
+          });
           if (e.repeat) {
             e.preventDefault();
             e.stopPropagation();
@@ -168,8 +193,28 @@ export function TerminalPane({
       }
     };
 
+    const handleKeyUp = (e: KeyboardEvent) => {
+      pushKeyDebug(`terminal.keyup:${terminalId}`, describeKeyboardEvent(e));
+    };
+
+    const handleInputLikeEvent = (e: Event) => {
+      pushKeyDebug(`terminal.${e.type}:${terminalId}`, describeInputLikeEvent(e));
+    };
+
     el.addEventListener("keydown", handleKeyDown, true);
-    return () => el.removeEventListener("keydown", handleKeyDown, true);
+    el.addEventListener("keyup", handleKeyUp, true);
+    el.addEventListener("beforeinput", handleInputLikeEvent, true);
+    el.addEventListener("input", handleInputLikeEvent, true);
+    el.addEventListener("textInput", handleInputLikeEvent, true);
+    el.addEventListener("keypress", handleInputLikeEvent, true);
+    return () => {
+      el.removeEventListener("keydown", handleKeyDown, true);
+      el.removeEventListener("keyup", handleKeyUp, true);
+      el.removeEventListener("beforeinput", handleInputLikeEvent, true);
+      el.removeEventListener("input", handleInputLikeEvent, true);
+      el.removeEventListener("textInput", handleInputLikeEvent, true);
+      el.removeEventListener("keypress", handleInputLikeEvent, true);
+    };
   }, [openSearch, closeSearch, resetMacOptionCompositionState, scheduleMacTextInputSuppressionCleanup, searchOpen, resizeRef, xtermRef]);
 
   const setActiveTerminal = useTerminalStore((s) => s.setActiveTerminal);

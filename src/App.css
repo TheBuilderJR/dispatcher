@@ -158,6 +158,87 @@ html, body, #root {
   font-size: 12px;
 }
 
+.key-debug-overlay {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  min-width: 360px;
+  max-width: calc(100vw - 24px);
+  max-height: min(45vh, 420px);
+  display: flex;
+  flex-direction: column;
+  background: rgba(10, 10, 10, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  overflow: hidden;
+  z-index: 9999;
+}
+
+.key-debug-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -4px;
+  width: 10px;
+  cursor: ew-resize;
+}
+
+.key-debug-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+}
+
+.key-debug-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.key-debug-header button {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.key-debug-list {
+  overflow: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+}
+
+.key-debug-entry {
+  display: grid;
+  grid-template-columns: 92px 188px 1fr;
+  gap: 8px;
+  padding: 6px 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.key-debug-time {
+  color: #8f8f8f;
+}
+
+.key-debug-source {
+  color: #8fd0ff;
+}
+
+.key-debug-detail {
+  color: #f0f0f0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.key-debug-empty {
+  padding: 10px;
+  color: var(--text-secondary);
+}
+
 /* Sidebar Project */
 .sidebar-project-node {
   margin-bottom: 0;

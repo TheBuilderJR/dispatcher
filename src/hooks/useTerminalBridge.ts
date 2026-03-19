@@ -15,6 +15,7 @@ import { useFontStore } from "../stores/useFontStore";
 import { useColorSchemeStore } from "../stores/useColorSchemeStore";
 import { buildFontFamilyCSS } from "../components/common/FontSettings";
 import { useTerminalStore } from "../stores/useTerminalStore";
+import { describeKeyboardEvent, describeTerminalData, pushKeyDebug } from "../lib/keyDebug";
 
 // ---------------------------------------------------------------------------
 // Persistent terminal instances — survive React remounts caused by layout
@@ -34,10 +35,16 @@ interface SyntheticInputSuppression {
   expiresAt: number;
 }
 
+interface FocusSequenceSuppression {
+  expiresAt: number;
+}
+
 const instances = new Map<string, TerminalInstance>();
 const createdPtys = new Set<string>();
 const syntheticInputSuppressions = new Map<string, SyntheticInputSuppression>();
+const focusSequenceSuppressions = new Map<string, FocusSequenceSuppression>();
 const SYNTHETIC_INPUT_SUPPRESSION_MS = 50;
+const FOCUS_SEQUENCE_SUPPRESSION_MS = 150;
 
 // ---------------------------------------------------------------------------
 // Write batching — coalesce PTY output per animation frame so xterm.js
@@ -120,6 +127,24 @@ function shouldSuppressSyntheticEcho(terminalId: string, data: string): boolean 
   return true;
 }
 
+function shouldSuppressTransientFocusSequence(terminalId: string, data: string): boolean {
+  if (data !== "\u001b[I" && data !== "\u001b[O") {
+    return false;
+  }
+
+  const suppression = focusSequenceSuppressions.get(terminalId);
+  if (!suppression) {
+    return false;
+  }
+
+  if (suppression.expiresAt < Date.now()) {
+    focusSequenceSuppressions.delete(terminalId);
+    return false;
+  }
+
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // WebGL addon policy:
 // - default off (opt-in only via localStorage key dispatcher.webgl.enabled=1)
@@ -197,6 +222,7 @@ export function focusTerminalInstance(terminalId: string) {
 }
 
 export function sendSyntheticTerminalInput(terminalId: string, data: string) {
+  pushKeyDebug(`terminal.synthetic-input:${terminalId}`, describeTerminalData(data));
   syntheticInputSuppressions.set(terminalId, {
     data,
     expiresAt: Date.now() + SYNTHETIC_INPUT_SUPPRESSION_MS,
@@ -204,6 +230,12 @@ export function sendSyntheticTerminalInput(terminalId: string, data: string) {
 
   writeTerminal(terminalId, data).catch(() => {
     syntheticInputSuppressions.delete(terminalId);
+  });
+}
+
+export function suppressTransientFocusSequences(terminalId: string) {
+  focusSequenceSuppressions.set(terminalId, {
+    expiresAt: Date.now() + FOCUS_SEQUENCE_SUPPRESSION_MS,
   });
 }
 
@@ -218,6 +250,7 @@ export function disposeTerminalInstance(terminalId: string) {
   createdPtys.delete(terminalId);
   disposeWriteBatch(terminalId);
   syntheticInputSuppressions.delete(terminalId);
+  focusSequenceSuppressions.delete(terminalId);
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +307,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
 
       // Handle Cmd+key shortcuts that xterm.js ignores by default
       xterm.attachCustomKeyEventHandler((e) => {
+        pushKeyDebug(`xterm.custom-key:${terminalId}`, describeKeyboardEvent(e));
         if (e.type !== "keydown") return true;
         if (e.defaultPrevented) return false;
 
@@ -361,13 +395,20 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
 
     // Forward user input to PTY.
     const dataDisposable = inst.xterm.onData((data) => {
+      pushKeyDebug(`xterm.onData:${terminalId}`, describeTerminalData(data));
       if (shouldSuppressSyntheticEcho(terminalId, data)) {
+        pushKeyDebug(`xterm.synthetic-echo-suppressed:${terminalId}`, describeTerminalData(data));
+        return;
+      }
+      if (shouldSuppressTransientFocusSequence(terminalId, data)) {
+        pushKeyDebug(`xterm.focus-sequence-suppressed:${terminalId}`, describeTerminalData(data));
         return;
       }
       // Any submitted command may change cwd; force a fresh lookup on next spawn.
       if (data.includes("\r")) {
         useTerminalStore.getState().updateCwd(terminalId, undefined);
       }
+      pushKeyDebug(`pty.write-request:${terminalId}`, describeTerminalData(data));
       writeTerminal(terminalId, data).catch(() => {});
     });
 
