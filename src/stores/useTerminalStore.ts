@@ -9,12 +9,24 @@ interface TerminalStore {
   addSession: (id: string, title?: string, cwd?: string) => void;
   removeSession: (id: string) => void;
   setActiveTerminal: (id: string | null) => void;
+  setPossiblyDone: (id: string, isPossiblyDone: boolean) => void;
+  setRecentlyFocused: (id: string, isRecentlyFocused: boolean) => void;
   updateTitle: (id: string, title: string) => void;
   updateNotes: (id: string, notes: string) => void;
   updateCwd: (id: string, cwd?: string) => void;
 }
 
 let terminalCounter = 0;
+const FOCUS_HOLD_MS = 10_000;
+const focusHoldTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearFocusHoldTimeout(id: string) {
+  const timeoutId = focusHoldTimeouts.get(id);
+  if (timeoutId !== undefined) {
+    clearTimeout(timeoutId);
+    focusHoldTimeouts.delete(id);
+  }
+}
 
 export const useTerminalStore = create<TerminalStore>()(
   persist(
@@ -32,13 +44,16 @@ export const useTerminalStore = create<TerminalStore>()(
               title: title ?? `Terminal ${terminalCounter}`,
               notes: "",
               cwd,
+              isPossiblyDone: false,
+              isRecentlyFocused: false,
             },
           },
           activeTerminalId: id,
         }));
       },
 
-      removeSession: (id) =>
+      removeSession: (id) => {
+        clearFocusHoldTimeout(id);
         set((state) => {
           const { [id]: _, ...rest } = state.sessions;
           const ids = Object.keys(rest);
@@ -51,9 +66,62 @@ export const useTerminalStore = create<TerminalStore>()(
                   : null
                 : state.activeTerminalId,
           };
+        });
+      },
+
+      setActiveTerminal: (id) => {
+        if (id) {
+          set((state) => {
+            const session = state.sessions[id];
+            if (!session || session.isRecentlyFocused) {
+              return { activeTerminalId: id };
+            }
+            return {
+              activeTerminalId: id,
+              sessions: {
+                ...state.sessions,
+                [id]: { ...session, isRecentlyFocused: true },
+              },
+            };
+          });
+
+          clearFocusHoldTimeout(id);
+          focusHoldTimeouts.set(
+            id,
+            setTimeout(() => {
+              focusHoldTimeouts.delete(id);
+              useTerminalStore.getState().setRecentlyFocused(id, false);
+            }, FOCUS_HOLD_MS)
+          );
+          return;
+        }
+
+        set({ activeTerminalId: null });
+      },
+
+      setPossiblyDone: (id, isPossiblyDone) =>
+        set((state) => {
+          const session = state.sessions[id];
+          if (!session || session.isPossiblyDone === isPossiblyDone) return state;
+          return {
+            sessions: {
+              ...state.sessions,
+              [id]: { ...session, isPossiblyDone },
+            },
+          };
         }),
 
-      setActiveTerminal: (id) => set({ activeTerminalId: id }),
+      setRecentlyFocused: (id, isRecentlyFocused) =>
+        set((state) => {
+          const session = state.sessions[id];
+          if (!session || session.isRecentlyFocused === isRecentlyFocused) return state;
+          return {
+            sessions: {
+              ...state.sessions,
+              [id]: { ...session, isRecentlyFocused },
+            },
+          };
+        }),
 
       updateTitle: (id, title) =>
         set((state) => {
@@ -84,11 +152,20 @@ export const useTerminalStore = create<TerminalStore>()(
     }),
     {
       name: "dispatcher-terminals",
+      partialize: (state) => ({
+        sessions: state.sessions,
+        activeTerminalId: state.activeTerminalId,
+      }),
       merge: (persisted, current) => {
         const merged = { ...current, ...(persisted as Partial<TerminalStore>) };
         const updated: Record<string, TerminalSession> = {};
         for (const [id, session] of Object.entries(merged.sessions)) {
-          updated[id] = { ...session, notes: session.notes ?? "" };
+          updated[id] = {
+            ...session,
+            notes: session.notes ?? "",
+            isPossiblyDone: false,
+            isRecentlyFocused: false,
+          };
         }
         return { ...merged, sessions: updated };
       },

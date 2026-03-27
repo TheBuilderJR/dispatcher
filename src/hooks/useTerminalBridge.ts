@@ -239,9 +239,147 @@ function cleanupWebGLState(xterm: Terminal) {
   clearWebGLProbe(xterm);
 }
 
+function createTerminalInstance(terminalId: string): TerminalInstance {
+  const existing = instances.get(terminalId);
+  if (existing) {
+    return existing;
+  }
+
+  const element = document.createElement("div");
+  element.style.width = "100%";
+  element.style.height = "100%";
+
+  const fontState = useFontStore.getState();
+  const xterm = new Terminal({
+    cursorBlink: true,
+    fontSize: fontState.fontSize,
+    fontFamily: buildFontFamilyCSS(fontState.fontFamily),
+    fontWeight: fontState.fontWeight,
+    fontWeightBold: fontState.fontWeightBold,
+    lineHeight: fontState.lineHeight,
+    letterSpacing: fontState.letterSpacing,
+    theme: useColorSchemeStore.getState().getActiveScheme().terminal,
+    macOptionIsMeta: true,
+    macOptionClickForcesSelection: true,
+    scrollback: DEFAULT_SCROLLBACK,
+    allowProposedApi: true,
+  });
+
+  const fitAddon = new FitAddon();
+  xterm.loadAddon(fitAddon);
+
+  const searchAddon = new SearchAddon();
+  xterm.loadAddon(searchAddon);
+
+  const webLinksAddon = new WebLinksAddon((event, uri) => {
+    if (!isLinkOpenModifierPressed(event)) {
+      return;
+    }
+
+    event.preventDefault();
+    void open(uri).catch(() => {});
+  }, {
+    hover: (event, uri) => {
+      const target = event.target as HTMLElement | null;
+      if (!target) {
+        return;
+      }
+
+      const isMac = navigator.platform.startsWith("Mac");
+      target.title = isMac ? `Cmd-click to open ${uri}` : `Ctrl-click to open ${uri}`;
+    },
+    leave: (event) => {
+      const target = event.target as HTMLElement | null;
+      if (target) {
+        target.removeAttribute("title");
+      }
+    },
+  });
+  xterm.loadAddon(webLinksAddon);
+
+  xterm.open(element);
+  loadWebGLAddon(xterm);
+
+  xterm.attachCustomKeyEventHandler((e) => {
+    pushKeyDebug(`xterm.custom-key:${terminalId}`, describeKeyboardEvent(e));
+    if (e.type !== "keydown") return true;
+    if (e.defaultPrevented) return false;
+
+    if (e.metaKey && e.key === "k") {
+      e.preventDefault();
+      xterm.clear();
+      return false;
+    }
+
+    if (e.metaKey && ["t", "T", "n", "d", "w", "f", "u", "r", "b", "=", "-", "0"].includes(e.key)) {
+      return false;
+    }
+    if (e.metaKey && (e.code === "BracketLeft" || e.code === "BracketRight")) {
+      return false;
+    }
+
+    return true;
+  });
+
+  const instance = { xterm, fitAddon, searchAddon, element };
+  instances.set(terminalId, instance);
+  return instance;
+}
+
+function ensureTerminalBackend(terminalId: string, cwd?: string) {
+  const instance = createTerminalInstance(terminalId);
+
+  if (!createdPtys.has(terminalId)) {
+    createdPtys.add(terminalId);
+
+    const channel = new Channel<TerminalOutputPayload>();
+    channel.onmessage = (msg) => {
+      batchedWrite(msg.terminal_id, msg.data);
+    };
+
+    const cols = instance.xterm.cols || 80;
+    const rows = instance.xterm.rows || 24;
+
+    createPty(terminalId, channel, cwd, cols, rows)
+      .then(() => {
+        warmPool(1).catch(() => {});
+      })
+      .catch((err) => {
+        instance.xterm.write(`\r\nError creating terminal: ${err}\r\n`);
+      });
+  }
+
+  return instance;
+}
+
+function captureVisibleBufferScreenshot(xterm: Terminal): string {
+  const buffer = xterm.buffer.active;
+  const lines: string[] = [];
+
+  for (let row = 0; row < xterm.rows; row++) {
+    const line = buffer.getLine(buffer.viewportY + row);
+    lines.push(line?.translateToString(true) ?? "");
+  }
+
+  return JSON.stringify({
+    cols: xterm.cols,
+    rows: xterm.rows,
+    lines,
+  });
+}
+
 /** Focus the xterm instance for a given terminal (e.g. after renaming). */
 export function focusTerminalInstance(terminalId: string) {
   instances.get(terminalId)?.xterm.focus();
+}
+
+export function captureTerminalScreenshot(terminalId: string): string | null {
+  const instance = instances.get(terminalId);
+  if (!instance) {
+    return null;
+  }
+
+  return captureVisibleBufferScreenshot(instance.xterm);
 }
 
 export function sendSyntheticTerminalInput(terminalId: string, data: string) {
@@ -260,6 +398,10 @@ export function suppressTransientFocusSequences(terminalId: string) {
   focusSequenceSuppressions.set(terminalId, {
     expiresAt: Date.now() + FOCUS_SEQUENCE_SUPPRESSION_MS,
   });
+}
+
+export function ensureTerminalScreenshotTarget(terminalId: string, cwd?: string) {
+  ensureTerminalBackend(terminalId, cwd);
 }
 
 /** Dispose an xterm instance and its PTY tracking when a terminal is truly closed. */
@@ -294,100 +436,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
     const mountPoint = containerRef.current;
     if (!mountPoint) return;
 
-    // Re-use an existing instance or create a fresh one.
-    let inst = instances.get(terminalId);
-
-    if (!inst) {
-      const element = document.createElement("div");
-      element.style.width = "100%";
-      element.style.height = "100%";
-
-      const fontState = useFontStore.getState();
-      const xterm = new Terminal({
-        cursorBlink: true,
-        fontSize: fontState.fontSize,
-        fontFamily: buildFontFamilyCSS(fontState.fontFamily),
-        fontWeight: fontState.fontWeight,
-        fontWeightBold: fontState.fontWeightBold,
-        lineHeight: fontState.lineHeight,
-        letterSpacing: fontState.letterSpacing,
-        theme: useColorSchemeStore.getState().getActiveScheme().terminal,
-        macOptionIsMeta: true,
-        // Preserve the longstanding macOS terminal convention where holding
-        // Option while dragging forces local text selection, even if the app
-        // inside the PTY has enabled mouse reporting (for example tmux mouse mode).
-        macOptionClickForcesSelection: true,
-        // xterm requires a finite scrollback limit. Keep the default high enough
-        // to behave like "never truncate" for normal terminal usage.
-        scrollback: DEFAULT_SCROLLBACK,
-        allowProposedApi: true,
-      });
-
-      const fitAddon = new FitAddon();
-      xterm.loadAddon(fitAddon);
-
-      const searchAddon = new SearchAddon();
-      xterm.loadAddon(searchAddon);
-
-      const webLinksAddon = new WebLinksAddon((event, uri) => {
-        if (!isLinkOpenModifierPressed(event)) {
-          return;
-        }
-
-        event.preventDefault();
-        void open(uri).catch(() => {});
-      }, {
-        hover: (event, uri) => {
-          const target = event.target as HTMLElement | null;
-          if (!target) {
-            return;
-          }
-
-          const isMac = navigator.platform.startsWith("Mac");
-          target.title = isMac ? `Cmd-click to open ${uri}` : `Ctrl-click to open ${uri}`;
-        },
-        leave: (event) => {
-          const target = event.target as HTMLElement | null;
-          if (target) {
-            target.removeAttribute("title");
-          }
-        },
-      });
-      xterm.loadAddon(webLinksAddon);
-
-      xterm.open(element);
-
-      // Try WebGL with automatic recovery on context loss
-      loadWebGLAddon(xterm);
-
-      // Handle Cmd+key shortcuts that xterm.js ignores by default
-      xterm.attachCustomKeyEventHandler((e) => {
-        pushKeyDebug(`xterm.custom-key:${terminalId}`, describeKeyboardEvent(e));
-        if (e.type !== "keydown") return true;
-        if (e.defaultPrevented) return false;
-
-        // Cmd+K: clear terminal scrollback
-        if (e.metaKey && e.key === "k") {
-          e.preventDefault();
-          xterm.clear();
-          return false;
-        }
-
-        // App-level shortcuts — let them bubble to the global handler
-        if (e.metaKey && ["t", "T", "n", "d", "w", "f", "u", "r", "b", "=", "-", "0"].includes(e.key)) {
-          return false;
-        }
-        // Bracket shortcuts: Cmd+]/[ (projects) and Cmd+Shift+]/[ (terminals)
-        if (e.metaKey && (e.code === "BracketLeft" || e.code === "BracketRight")) {
-          return false;
-        }
-
-        return true;
-      });
-
-      inst = { xterm, fitAddon, searchAddon, element };
-      instances.set(terminalId, inst);
-    }
+    const inst = ensureTerminalBackend(terminalId, cwd);
 
     // Attach the persistent element to the current mount point.
     mountPoint.appendChild(inst.element);
@@ -452,26 +501,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
         i.xterm.focus();
       }
 
-      // Create the backend PTY exactly once per terminalId.
-      if (!createdPtys.has(terminalId)) {
-        createdPtys.add(terminalId);
-
-        const channel = new Channel<TerminalOutputPayload>();
-        channel.onmessage = (msg) => {
-          batchedWrite(msg.terminal_id, msg.data);
-        };
-
-        const cols = i.xterm.cols;
-        const rows = i.xterm.rows;
-
-        createPty(terminalId, channel, cwd, cols, rows)
-          .then(() => {
-            warmPool(1).catch(() => {});
-          })
-          .catch((err) => {
-            i.xterm.write(`\r\nError creating terminal: ${err}\r\n`);
-          });
-      }
+      resizeTerminal(terminalId, i.xterm.cols, i.xterm.rows).catch(() => {});
     });
 
     // Forward user input to PTY.

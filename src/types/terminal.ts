@@ -3,4 +3,6 @@ export interface TerminalSession {
   title: string;
   notes: string;
   cwd?: string;
+  isPossiblyDone: boolean;
+  isRecentlyFocused: boolean;
 }

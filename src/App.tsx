@@ -14,6 +14,7 @@ import { findTerminalIds, findLayoutKeyForTerminal, findSiblingTerminalId } from
 import { closeTerminal, warmPool, refreshPool, getTerminalCwd, writeTerminal } from "./lib/tauriCommands";
 import { disposeTerminalInstance } from "./hooks/useTerminalBridge";
 import { useFileDrop } from "./hooks/useFileDrop";
+import { useTerminalScreenshotMonitor } from "./hooks/useTerminalScreenshotMonitor";
 import "./App.css";
 
 function generateId(): string {
@@ -54,6 +55,7 @@ export default function App() {
   const removeLayout = useLayoutStore((s) => s.removeLayout);
 
   useFileDrop();
+  useTerminalScreenshotMonitor();
 
   const activeProject = activeProjectId ? projects[activeProjectId] : null;
 
