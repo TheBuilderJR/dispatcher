@@ -13,6 +13,7 @@ export interface ScreenshotDebugEntry {
 
 const SCREENSHOT_DEBUG_EVENT = "dispatcher:screenshot-debug";
 const MAX_SCREENSHOT_DEBUG_ENTRIES = 48;
+const SCREENSHOT_DEBUG_TTL_MS = 60 * 60 * 1000;
 
 let nextId = 1;
 let generation = 1;
@@ -22,6 +23,12 @@ export function pushScreenshotDebug(
   entry: Omit<ScreenshotDebugEntry, "id" | "generation" | "timestamp" | "timestampMs">
 ): void {
   const now = new Date();
+  const cutoff = now.getTime() - SCREENSHOT_DEBUG_TTL_MS;
+
+  while (entries.length > 0 && entries[0].timestampMs < cutoff) {
+    entries.shift();
+  }
+
   entries.push({
     id: nextId++,
     generation,
