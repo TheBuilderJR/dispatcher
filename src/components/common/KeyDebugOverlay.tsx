@@ -6,8 +6,19 @@ import {
   subscribeKeyDebug,
   type KeyDebugEntry,
 } from "../../lib/keyDebug";
+import {
+  clearScreenshotDebugEntries,
+  getCurrentScreenshotDebugGeneration,
+  getScreenshotDebugEntries,
+  subscribeScreenshotDebug,
+  type ScreenshotDebugEntry,
+} from "../../lib/screenshotDebug";
+import { findLayoutKeyForTerminal } from "../../lib/layoutUtils";
+import { useLayoutStore } from "../../stores/useLayoutStore";
+import { useTerminalStore } from "../../stores/useTerminalStore";
 
 const KEY_DEBUG_WIDTH_STORAGE_KEY = "dispatcher.keydebug.width";
+type DebugTab = "keys" | "screenshots";
 
 function readStoredWidth(): number {
   if (typeof window === "undefined") return 640;
@@ -22,12 +33,19 @@ function formatTime(entry: KeyDebugEntry): string {
 
 export function KeyDebugOverlay() {
   const [entries, setEntries] = useState<KeyDebugEntry[]>(() => getKeyDebugEntries());
+  const [screenshotEntries, setScreenshotEntries] = useState<ScreenshotDebugEntry[]>(() => getScreenshotDebugEntries());
   const [generation, setGeneration] = useState(() => getCurrentKeyDebugGeneration());
+  const [screenshotGeneration, setScreenshotGeneration] = useState(() => getCurrentScreenshotDebugGeneration());
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const [width, setWidth] = useState(() => readStoredWidth());
+  const [activeTab, setActiveTab] = useState<DebugTab>("keys");
   const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const sessions = useTerminalStore((state) => state.sessions);
+  const activeTerminalId = useTerminalStore((state) => state.activeTerminalId);
+  const layouts = useLayoutStore((state) => state.layouts);
 
   useEffect(() => subscribeKeyDebug(setEntries), []);
+  useEffect(() => subscribeScreenshotDebug(setScreenshotEntries), []);
   useEffect(() => {
     window.localStorage.setItem(KEY_DEBUG_WIDTH_STORAGE_KEY, String(width));
   }, [width]);
@@ -36,18 +54,52 @@ export function KeyDebugOverlay() {
     () => [...entries].filter((entry) => entry.generation === generation).reverse().slice(0, 18),
     [entries, generation]
   );
+  const visibleScreenshotEntries = useMemo(
+    () => {
+      const activeTabTerminalId = activeTerminalId
+        ? findLayoutKeyForTerminal(layouts, activeTerminalId) ?? activeTerminalId
+        : null;
+
+      if (!activeTabTerminalId) {
+        return [];
+      }
+
+      return [...screenshotEntries]
+        .filter((entry) => entry.generation === screenshotGeneration && entry.terminalId === activeTabTerminalId)
+        .reverse()
+        .slice(0, 18);
+    },
+    [activeTerminalId, layouts, screenshotEntries, screenshotGeneration]
+  );
 
   const handleClear = () => {
-    setGeneration(clearKeyDebugEntries());
-    setEntries([]);
+    if (activeTab === "keys") {
+      setGeneration(clearKeyDebugEntries());
+      setEntries([]);
+    } else {
+      setScreenshotGeneration(clearScreenshotDebugEntries());
+      setScreenshotEntries([]);
+    }
     setCopyState("idle");
   };
 
   const handleCopy = async () => {
-    const text = [
-      `Key Debug G${generation}`,
-      ...visibleEntries.map((entry) => `${formatTime(entry)}\n${entry.source}\n${entry.detail}`),
-    ].join("\n");
+    const text = activeTab === "keys"
+      ? [
+          `Key Debug G${generation}`,
+          ...visibleEntries.map((entry) => `${formatTime(entry)}\n${entry.source}\n${entry.detail}`),
+        ].join("\n")
+      : [
+          `Screenshot Debug G${screenshotGeneration}`,
+          `terminal=${activeTerminalId ? findLayoutKeyForTerminal(layouts, activeTerminalId) ?? activeTerminalId : "none"}`,
+          ...visibleScreenshotEntries.map((entry) => [
+            `${entry.timestamp}.${String(entry.timestampMs % 1000).padStart(3, "0")}`,
+            `${sessions[entry.terminalId]?.title ?? entry.terminalId} (${entry.terminalId})`,
+            `hash=${entry.hash}`,
+            `prev=${entry.previousHash ?? "none"}`,
+            `changed=${String(entry.changed)} done=${String(entry.isPossiblyDone)}`,
+          ].join("\n")),
+        ].join("\n");
 
     try {
       await navigator.clipboard.writeText(text);
@@ -86,7 +138,7 @@ export function KeyDebugOverlay() {
     <div className="key-debug-overlay" style={{ width: `${width}px` }}>
       <div className="key-debug-resize-handle" onMouseDown={handleResizeMouseDown} />
       <div className="key-debug-header">
-        <strong>{`Key Debug G${generation}`}</strong>
+        <strong>{activeTab === "keys" ? `Key Debug G${generation}` : `Screenshot Debug G${screenshotGeneration}`}</strong>
         <div className="key-debug-actions">
           <button type="button" onClick={handleCopy}>
             {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy"}
@@ -94,15 +146,62 @@ export function KeyDebugOverlay() {
           <button type="button" onClick={handleClear}>Clear</button>
         </div>
       </div>
+      <div className="key-debug-tabs">
+        <button
+          type="button"
+          className={`key-debug-tab ${activeTab === "keys" ? "active" : ""}`}
+          onClick={() => {
+            setActiveTab("keys");
+            setCopyState("idle");
+          }}
+        >
+          Keys
+        </button>
+        <button
+          type="button"
+          className={`key-debug-tab ${activeTab === "screenshots" ? "active" : ""}`}
+          onClick={() => {
+            setActiveTab("screenshots");
+            setCopyState("idle");
+          }}
+        >
+          Screenshots
+        </button>
+      </div>
       <div className="key-debug-list">
-        {visibleEntries.length === 0 ? (
-          <div className="key-debug-empty">No events yet</div>
+        {activeTab === "keys" ? (
+          visibleEntries.length === 0 ? (
+            <div className="key-debug-empty">No events yet</div>
+          ) : (
+            visibleEntries.map((entry) => (
+              <div key={entry.id} className="key-debug-entry">
+                <span className="key-debug-time">{formatTime(entry)}</span>
+                <span className="key-debug-source">{entry.source}</span>
+                <span className="key-debug-detail">{entry.detail}</span>
+              </div>
+            ))
+          )
+        ) : visibleScreenshotEntries.length === 0 ? (
+          <div className="key-debug-empty">No screenshots yet for the active tab</div>
         ) : (
-          visibleEntries.map((entry) => (
-            <div key={entry.id} className="key-debug-entry">
-              <span className="key-debug-time">{formatTime(entry)}</span>
-              <span className="key-debug-source">{entry.source}</span>
-              <span className="key-debug-detail">{entry.detail}</span>
+          visibleScreenshotEntries.map((entry) => (
+            <div key={entry.id} className="key-debug-entry key-debug-entry-screenshot">
+              <span className="key-debug-time">{`${entry.timestamp}.${String(entry.timestampMs % 1000).padStart(3, "0")}`}</span>
+              <span className="key-debug-source">{sessions[entry.terminalId]?.title ?? entry.terminalId}</span>
+              <span className="key-debug-detail">
+                {[
+                  `terminal=${entry.terminalId}`,
+                  `hash=${entry.hash}`,
+                  `prev=${entry.previousHash ?? "none"}`,
+                  `changed=${String(entry.changed)}`,
+                  `done=${String(entry.isPossiblyDone)}`,
+                ].join("\n")}
+              </span>
+              <img
+                className="key-debug-screenshot-image"
+                src={entry.imageDataUrl}
+                alt={`Terminal screenshot for ${sessions[entry.terminalId]?.title ?? entry.terminalId}`}
+              />
             </div>
           ))
         )}

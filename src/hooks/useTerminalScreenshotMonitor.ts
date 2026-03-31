@@ -1,52 +1,114 @@
 import { useEffect } from "react";
 import { captureTerminalScreenshot, ensureTerminalScreenshotTarget } from "./useTerminalBridge";
+import { pushScreenshotDebug } from "../lib/screenshotDebug";
 import { useTerminalStore } from "../stores/useTerminalStore";
 
 const SCREENSHOT_INTERVAL_MS = 60_000;
 const SCREENSHOT_INACTIVITY_MS = 120_000;
 
+async function hashScreenshot(screenshot: string): Promise<string> {
+  const bytes = new TextEncoder().encode(screenshot);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
 export function useTerminalScreenshotMonitor() {
   useEffect(() => {
-    const previousScreenshots = new Map<string, string>();
+    const previousHashes = new Map<string, string>();
     const lastChangedAt = new Map<string, number>();
+    const scheduledSamples = new Set<number>();
+    let isSampling = false;
+    let isDisposed = false;
 
-    const sampleAllTerminals = () => {
-      const now = Date.now();
-      const store = useTerminalStore.getState();
-      const terminalIds = Object.keys(store.sessions);
-      const activeIds = new Set(terminalIds);
-
-      for (const terminalId of previousScreenshots.keys()) {
-        if (!activeIds.has(terminalId)) {
-          previousScreenshots.delete(terminalId);
-          lastChangedAt.delete(terminalId);
-        }
+    const sampleAllTerminals = async () => {
+      if (isSampling || isDisposed) {
+        return;
       }
 
-      for (const terminalId of terminalIds) {
-        ensureTerminalScreenshotTarget(terminalId, store.sessions[terminalId]?.cwd);
-        const screenshot = captureTerminalScreenshot(terminalId);
-        if (screenshot === null) {
-          continue;
+      isSampling = true;
+      const now = Date.now();
+      try {
+        const store = useTerminalStore.getState();
+        const terminalIds = Object.keys(store.sessions);
+        const activeIds = new Set(terminalIds);
+
+        for (const terminalId of previousHashes.keys()) {
+          if (!activeIds.has(terminalId)) {
+            previousHashes.delete(terminalId);
+            lastChangedAt.delete(terminalId);
+          }
         }
 
-        const previousScreenshot = previousScreenshots.get(terminalId);
-        if (previousScreenshot !== screenshot) {
-          previousScreenshots.set(terminalId, screenshot);
-          lastChangedAt.set(terminalId, now);
-          store.setPossiblyDone(terminalId, false);
-          continue;
-        }
+        for (const terminalId of terminalIds) {
+          ensureTerminalScreenshotTarget(terminalId, store.sessions[terminalId]?.cwd);
+          const screenshot = captureTerminalScreenshot(terminalId);
+          if (screenshot === null) {
+            continue;
+          }
 
-        const changedAt = lastChangedAt.get(terminalId) ?? now;
-        store.setPossiblyDone(terminalId, now - changedAt >= SCREENSHOT_INACTIVITY_MS);
-        previousScreenshots.set(terminalId, screenshot);
+          const hash = await hashScreenshot(screenshot);
+          if (isDisposed) {
+            return;
+          }
+
+          const previousHash = previousHashes.get(terminalId) ?? null;
+          const changed = previousHash !== hash;
+          const changedAt = changed ? now : (lastChangedAt.get(terminalId) ?? now);
+          const isPossiblyDone = !changed && now - changedAt >= SCREENSHOT_INACTIVITY_MS;
+
+          previousHashes.set(terminalId, hash);
+          lastChangedAt.set(terminalId, changedAt);
+          store.setPossiblyDone(terminalId, isPossiblyDone);
+          pushScreenshotDebug({
+            terminalId,
+            hash,
+            previousHash,
+            changed,
+            isPossiblyDone,
+            imageDataUrl: screenshot,
+          });
+        }
+      } finally {
+        isSampling = false;
       }
     };
 
-    sampleAllTerminals();
-    const intervalId = window.setInterval(sampleAllTerminals, SCREENSHOT_INTERVAL_MS);
+    const scheduleSample = (delayMs: number) => {
+      const timeoutId = window.setTimeout(() => {
+        scheduledSamples.delete(timeoutId);
+        void sampleAllTerminals();
+      }, delayMs);
+      scheduledSamples.add(timeoutId);
+    };
 
-    return () => window.clearInterval(intervalId);
+    void sampleAllTerminals();
+    scheduleSample(500);
+    scheduleSample(1500);
+
+    let lastSessionSignature = Object.keys(useTerminalStore.getState().sessions).sort().join("|");
+    const unsubscribe = useTerminalStore.subscribe((state) => {
+      const nextSignature = Object.keys(state.sessions).sort().join("|");
+      if (nextSignature === lastSessionSignature) {
+        return;
+      }
+
+      lastSessionSignature = nextSignature;
+      scheduleSample(0);
+      scheduleSample(500);
+    });
+
+    const intervalId = window.setInterval(() => {
+      void sampleAllTerminals();
+    }, SCREENSHOT_INTERVAL_MS);
+
+    return () => {
+      isDisposed = true;
+      unsubscribe();
+      window.clearInterval(intervalId);
+      for (const timeoutId of scheduledSamples) {
+        window.clearTimeout(timeoutId);
+      }
+      scheduledSamples.clear();
+    };
   }, []);
 }

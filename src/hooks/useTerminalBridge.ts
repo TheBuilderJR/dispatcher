@@ -31,6 +31,8 @@ interface TerminalInstance {
   searchAddon: SearchAddon;
   /** The DOM element xterm is rendered into. We move this between mount points. */
   element: HTMLDivElement;
+  lastWidth: number;
+  lastHeight: number;
 }
 
 interface SyntheticInputSuppression {
@@ -49,6 +51,9 @@ const focusSequenceSuppressions = new Map<string, FocusSequenceSuppression>();
 const SYNTHETIC_INPUT_SUPPRESSION_MS = 50;
 const FOCUS_SEQUENCE_SUPPRESSION_MS = 150;
 const DEFAULT_SCROLLBACK = 1_000_000;
+const PARKED_TERMINAL_WIDTH = 1200;
+const PARKED_TERMINAL_HEIGHT = 720;
+const PARKING_ROOT_ID = "dispatcher-terminal-parking-root";
 
 // ---------------------------------------------------------------------------
 // Write batching — coalesce PTY output per animation frame so xterm.js
@@ -239,6 +244,59 @@ function cleanupWebGLState(xterm: Terminal) {
   clearWebGLProbe(xterm);
 }
 
+function getTerminalParkingRoot(): HTMLDivElement {
+  let root = document.getElementById(PARKING_ROOT_ID) as HTMLDivElement | null;
+  if (root) {
+    return root;
+  }
+
+  root = document.createElement("div");
+  root.id = PARKING_ROOT_ID;
+  root.style.position = "fixed";
+  root.style.left = "-20000px";
+  root.style.top = "0";
+  root.style.width = "1px";
+  root.style.height = "1px";
+  root.style.pointerEvents = "none";
+  root.style.opacity = "0";
+  root.style.overflow = "hidden";
+  root.style.zIndex = "-1";
+  document.body.appendChild(root);
+  return root;
+}
+
+function parkTerminalInstance(instance: TerminalInstance, width?: number, height?: number) {
+  const nextWidth = width && width > 0 ? width : instance.lastWidth || PARKED_TERMINAL_WIDTH;
+  const nextHeight = height && height > 0 ? height : instance.lastHeight || PARKED_TERMINAL_HEIGHT;
+
+  instance.lastWidth = nextWidth;
+  instance.lastHeight = nextHeight;
+  instance.element.style.position = "absolute";
+  instance.element.style.left = "0";
+  instance.element.style.top = "0";
+  instance.element.style.width = `${nextWidth}px`;
+  instance.element.style.height = `${nextHeight}px`;
+  getTerminalParkingRoot().appendChild(instance.element);
+}
+
+function attachTerminalInstance(instance: TerminalInstance, mountPoint: HTMLDivElement) {
+  const width = mountPoint.clientWidth;
+  const height = mountPoint.clientHeight;
+  if (width > 0) {
+    instance.lastWidth = width;
+  }
+  if (height > 0) {
+    instance.lastHeight = height;
+  }
+
+  instance.element.style.position = "";
+  instance.element.style.left = "";
+  instance.element.style.top = "";
+  instance.element.style.width = "100%";
+  instance.element.style.height = "100%";
+  mountPoint.appendChild(instance.element);
+}
+
 function createTerminalInstance(terminalId: string): TerminalInstance {
   const existing = instances.get(terminalId);
   if (existing) {
@@ -297,7 +355,17 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
   });
   xterm.loadAddon(webLinksAddon);
 
+  const instance = {
+    xterm,
+    fitAddon,
+    searchAddon,
+    element,
+    lastWidth: PARKED_TERMINAL_WIDTH,
+    lastHeight: PARKED_TERMINAL_HEIGHT,
+  };
+  parkTerminalInstance(instance, PARKED_TERMINAL_WIDTH, PARKED_TERMINAL_HEIGHT);
   xterm.open(element);
+  fitAddon.fit();
   loadWebGLAddon(xterm);
 
   xterm.attachCustomKeyEventHandler((e) => {
@@ -321,7 +389,6 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
     return true;
   });
 
-  const instance = { xterm, fitAddon, searchAddon, element };
   instances.set(terminalId, instance);
   return instance;
 }
@@ -352,20 +419,85 @@ function ensureTerminalBackend(terminalId: string, cwd?: string) {
   return instance;
 }
 
-function captureVisibleBufferScreenshot(xterm: Terminal): string {
+function captureCanvasScreenshot(element: HTMLDivElement, fallbackWidth: number, fallbackHeight: number): string | null {
+  const canvases = Array.from(element.querySelectorAll("canvas"));
+  if (canvases.length === 0) {
+    return null;
+  }
+
+  const width = canvases.reduce((max, canvas) => Math.max(max, canvas.width), 0) || fallbackWidth;
+  const height = canvases.reduce((max, canvas) => Math.max(max, canvas.height), 0) || fallbackHeight;
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  const composite = document.createElement("canvas");
+  composite.width = width;
+  composite.height = height;
+  const context = composite.getContext("2d");
+  if (!context) {
+    return null;
+  }
+
+  for (const canvas of canvases) {
+    context.drawImage(canvas, 0, 0, width, height);
+  }
+
+  return composite.toDataURL("image/png");
+}
+
+function renderTerminalBufferScreenshot(instance: TerminalInstance): string | null {
+  const { xterm } = instance;
   const buffer = xterm.buffer.active;
-  const lines: string[] = [];
+  const width = Math.max(instance.lastWidth || PARKED_TERMINAL_WIDTH, 320);
+  const height = Math.max(instance.lastHeight || PARKED_TERMINAL_HEIGHT, 180);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return null;
+  }
+
+  const theme = xterm.options.theme ?? {};
+  const background = theme.background ?? "#000000";
+  const foreground = theme.foreground ?? "#f0f0f0";
+  const cursor = theme.cursor ?? foreground;
+  const fontSize = typeof xterm.options.fontSize === "number" ? xterm.options.fontSize : 13;
+  const lineHeight = typeof xterm.options.lineHeight === "number" ? xterm.options.lineHeight : 1;
+  const fontFamily = typeof xterm.options.fontFamily === "string" ? xterm.options.fontFamily : "Menlo, monospace";
+
+  context.fillStyle = background;
+  context.fillRect(0, 0, width, height);
+
+  const cellWidth = width / Math.max(xterm.cols, 1);
+  const cellHeight = height / Math.max(xterm.rows, 1);
+  const baselineOffset = Math.min(cellHeight - 2, Math.max(fontSize, cellHeight * 0.8));
+
+  context.font = `${fontSize}px ${fontFamily}`;
+  context.textBaseline = "alphabetic";
+  context.fillStyle = foreground;
 
   for (let row = 0; row < xterm.rows; row++) {
     const line = buffer.getLine(buffer.viewportY + row);
-    lines.push(line?.translateToString(true) ?? "");
+    const text = line?.translateToString(false) ?? "";
+    context.fillText(text, 0, row * cellHeight + baselineOffset * lineHeight);
   }
 
-  return JSON.stringify({
-    cols: xterm.cols,
-    rows: xterm.rows,
-    lines,
-  });
+  const cursorRow = buffer.cursorY - buffer.viewportY;
+  if (cursorRow >= 0 && cursorRow < xterm.rows && buffer.cursorX >= 0 && buffer.cursorX < xterm.cols) {
+    context.strokeStyle = cursor;
+    context.lineWidth = 1;
+    context.strokeRect(
+      Math.floor(buffer.cursorX * cellWidth) + 0.5,
+      Math.floor(cursorRow * cellHeight) + 0.5,
+      Math.max(1, Math.floor(cellWidth) - 1),
+      Math.max(1, Math.floor(cellHeight) - 1)
+    );
+  }
+
+  return canvas.toDataURL("image/png");
 }
 
 /** Focus the xterm instance for a given terminal (e.g. after renaming). */
@@ -379,7 +511,10 @@ export function captureTerminalScreenshot(terminalId: string): string | null {
     return null;
   }
 
-  return captureVisibleBufferScreenshot(instance.xterm);
+  return (
+    captureCanvasScreenshot(instance.element, instance.lastWidth, instance.lastHeight) ??
+    renderTerminalBufferScreenshot(instance)
+  );
 }
 
 export function sendSyntheticTerminalInput(terminalId: string, data: string) {
@@ -439,7 +574,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
     const inst = ensureTerminalBackend(terminalId, cwd);
 
     // Attach the persistent element to the current mount point.
-    mountPoint.appendChild(inst.element);
+    attachTerminalInstance(inst, mountPoint);
 
     xtermRef.current = inst.xterm;
     fitAddonRef.current = inst.fitAddon;
@@ -569,9 +704,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
 
       // Detach the element from the DOM but do NOT dispose the xterm.
       // It will be re-attached if the component remounts (layout change).
-      if (mountPoint.contains(inst!.element)) {
-        mountPoint.removeChild(inst!.element);
-      }
+      parkTerminalInstance(inst, mountPoint.clientWidth, mountPoint.clientHeight);
     };
   }, [terminalId]); // cwd intentionally omitted — only used for initial PTY creation
 

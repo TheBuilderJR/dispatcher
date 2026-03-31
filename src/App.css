@@ -206,6 +206,29 @@ html, body, #root {
   cursor: pointer;
 }
 
+.key-debug-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.key-debug-tab {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.key-debug-tab.active {
+  background: rgba(143, 208, 255, 0.16);
+  color: #d8efff;
+  border-color: rgba(143, 208, 255, 0.34);
+}
+
 .key-debug-list {
   overflow: auto;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
@@ -237,6 +260,19 @@ html, body, #root {
 .key-debug-empty {
   padding: 10px;
   color: var(--text-secondary);
+}
+
+.key-debug-entry-screenshot {
+  grid-template-columns: 92px 132px 1fr;
+}
+
+.key-debug-screenshot-image {
+  grid-column: 2 / 4;
+  width: 100%;
+  max-width: 420px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 /* Sidebar Project */
