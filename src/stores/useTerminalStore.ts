@@ -10,6 +10,7 @@ interface TerminalStore {
   removeSession: (id: string) => void;
   setActiveTerminal: (id: string | null) => void;
   setPossiblyDone: (id: string, isPossiblyDone: boolean) => void;
+  setLongInactive: (id: string, isLongInactive: boolean) => void;
   setRecentlyFocused: (id: string, isRecentlyFocused: boolean) => void;
   updateTitle: (id: string, title: string) => void;
   updateNotes: (id: string, notes: string) => void;
@@ -45,6 +46,7 @@ export const useTerminalStore = create<TerminalStore>()(
               notes: "",
               cwd,
               isPossiblyDone: false,
+              isLongInactive: false,
               isRecentlyFocused: false,
             },
           },
@@ -111,6 +113,18 @@ export const useTerminalStore = create<TerminalStore>()(
           };
         }),
 
+      setLongInactive: (id, isLongInactive) =>
+        set((state) => {
+          const session = state.sessions[id];
+          if (!session || session.isLongInactive === isLongInactive) return state;
+          return {
+            sessions: {
+              ...state.sessions,
+              [id]: { ...session, isLongInactive },
+            },
+          };
+        }),
+
       setRecentlyFocused: (id, isRecentlyFocused) =>
         set((state) => {
           const session = state.sessions[id];
@@ -164,6 +178,7 @@ export const useTerminalStore = create<TerminalStore>()(
             ...session,
             notes: session.notes ?? "",
             isPossiblyDone: false,
+            isLongInactive: false,
             isRecentlyFocused: false,
           };
         }

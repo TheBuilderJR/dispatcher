@@ -8,6 +8,7 @@ export interface ScreenshotDebugEntry {
   previousHash: string | null;
   changed: boolean;
   isPossiblyDone: boolean;
+  isLongInactive: boolean;
   imageDataUrl: string;
 }
 

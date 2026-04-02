@@ -167,11 +167,14 @@ html, body, #root {
   max-height: min(45vh, 420px);
   display: flex;
   flex-direction: column;
-  background: rgba(10, 10, 10, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: color-mix(in srgb, var(--bg-surface) 92%, var(--bg-primary) 8%);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
   border-radius: 10px;
   overflow: hidden;
   z-index: 9999;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(18px);
 }
 
 .key-debug-resize-handle {
@@ -188,8 +191,9 @@ html, body, #root {
   align-items: center;
   justify-content: space-between;
   padding: 8px 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--border-color);
   font-size: 12px;
+  background: color-mix(in srgb, var(--bg-secondary) 78%, transparent);
 }
 
 .key-debug-actions {
@@ -198,41 +202,56 @@ html, body, #root {
 }
 
 .key-debug-header button {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--bg-primary);
   color: var(--text-primary);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 3px 8px;
   cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.key-debug-header button:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-muted);
 }
 
 .key-debug-tabs {
   display: flex;
   gap: 6px;
   padding: 8px 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--bg-secondary) 58%, transparent);
 }
 
 .key-debug-tab {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--bg-primary);
   color: var(--text-secondary);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--border-color);
   border-radius: 999px;
   padding: 4px 10px;
   font-size: 11px;
   cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.key-debug-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
 }
 
 .key-debug-tab.active {
-  background: rgba(143, 208, 255, 0.16);
-  color: #d8efff;
-  border-color: rgba(143, 208, 255, 0.34);
+  background: var(--bg-active);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .key-debug-list {
   overflow: auto;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 11px;
+  background: color-mix(in srgb, var(--bg-primary) 72%, transparent);
 }
 
 .key-debug-entry {
@@ -240,19 +259,19 @@ html, body, #root {
   grid-template-columns: 92px 188px 1fr;
   gap: 8px;
   padding: 6px 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
 }
 
 .key-debug-time {
-  color: #8f8f8f;
+  color: var(--text-muted);
 }
 
 .key-debug-source {
-  color: #8fd0ff;
+  color: var(--accent);
 }
 
 .key-debug-detail {
-  color: #f0f0f0;
+  color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -271,8 +290,8 @@ html, body, #root {
   width: 100%;
   max-width: 420px;
   border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
 }
 
 /* Sidebar Project */

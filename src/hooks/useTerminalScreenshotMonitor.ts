@@ -5,6 +5,7 @@ import { useTerminalStore } from "../stores/useTerminalStore";
 
 const SCREENSHOT_INTERVAL_MS = 60_000;
 const SCREENSHOT_INACTIVITY_MS = 120_000;
+const SCREENSHOT_LONG_INACTIVITY_MS = 60 * 60 * 1000;
 
 async function hashScreenshot(screenshot: string): Promise<string> {
   const bytes = new TextEncoder().encode(screenshot);
@@ -55,16 +56,19 @@ export function useTerminalScreenshotMonitor() {
           const changed = previousHash !== hash;
           const changedAt = changed ? now : (lastChangedAt.get(terminalId) ?? now);
           const isPossiblyDone = !changed && now - changedAt >= SCREENSHOT_INACTIVITY_MS;
+          const isLongInactive = !changed && now - changedAt >= SCREENSHOT_LONG_INACTIVITY_MS;
 
           previousHashes.set(terminalId, hash);
           lastChangedAt.set(terminalId, changedAt);
           store.setPossiblyDone(terminalId, isPossiblyDone);
+          store.setLongInactive(terminalId, isLongInactive);
           pushScreenshotDebug({
             terminalId,
             hash,
             previousHash,
             changed,
             isPossiblyDone,
+            isLongInactive,
             imageDataUrl: screenshot,
           });
         }

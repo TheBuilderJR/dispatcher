@@ -5,7 +5,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Channel } from "@tauri-apps/api/core";
-import { readText as readClipboardText } from "@tauri-apps/plugin-clipboard-manager";
+import { readText as readClipboardText, writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-shell";
 import {
   createTerminal as createPty,
@@ -81,6 +81,10 @@ function isLinkOpenModifierPressed(event: MouseEvent): boolean {
   return isMac ? event.metaKey : event.ctrlKey;
 }
 
+function isOptionModifierPressed(event: MouseEvent): boolean {
+  return event.altKey;
+}
+
 async function pasteClipboardIntoTerminal(terminalId: string, xterm: Terminal) {
   pushKeyDebug(`terminal.middle-paste-request:${terminalId}`, {});
 
@@ -93,6 +97,19 @@ async function pasteClipboardIntoTerminal(terminalId: string, xterm: Terminal) {
   pushKeyDebug(`terminal.middle-paste-data:${terminalId}`, describeTerminalData(text));
   xterm.focus();
   xterm.paste(text);
+}
+
+async function copyTerminalSelectionToClipboard(terminalId: string, xterm: Terminal) {
+  const text = xterm.getSelection();
+  if (!text) {
+    pushKeyDebug(`terminal.selection-copy-empty:${terminalId}`, {});
+    return;
+  }
+
+  pushKeyDebug(`terminal.selection-copy:${terminalId}`, {
+    selectionLength: text.length,
+  });
+  await writeClipboardText(text);
 }
 
 function persistWebglEnabled(enabled: boolean) {
@@ -591,7 +608,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
     inst.xterm.options.letterSpacing = currentFont.letterSpacing;
 
     const handleMiddleMouseDown = (event: MouseEvent) => {
-      if (event.button !== 1) {
+      if (event.button !== 1 || !isOptionModifierPressed(event)) {
         return;
       }
 
@@ -614,7 +631,56 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       });
     };
 
+    let optionSelectionPending = false;
+
+    const handleOptionSelectionMouseDown = (event: MouseEvent) => {
+      if (event.button !== 0 || !isOptionModifierPressed(event)) {
+        optionSelectionPending = false;
+        return;
+      }
+
+      optionSelectionPending = true;
+      pushKeyDebug(`terminal.option-selection-start:${terminalId}`, {
+        detail: event.detail,
+      });
+    };
+
+    const handleOptionSelectionMouseUp = (event: MouseEvent) => {
+      if (event.button !== 0 || !optionSelectionPending) {
+        return;
+      }
+
+      optionSelectionPending = false;
+      window.setTimeout(() => {
+        void copyTerminalSelectionToClipboard(terminalId, inst.xterm).catch((error) => {
+          pushKeyDebug(`terminal.selection-copy-error:${terminalId}`, {
+            message: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }, 0);
+    };
+
+    const handleOptionDoubleClick = (event: MouseEvent) => {
+      if (event.button !== 0 || !isOptionModifierPressed(event)) {
+        return;
+      }
+
+      pushKeyDebug(`terminal.option-double-click:${terminalId}`, {
+        detail: event.detail,
+      });
+      window.setTimeout(() => {
+        void copyTerminalSelectionToClipboard(terminalId, inst.xterm).catch((error) => {
+          pushKeyDebug(`terminal.selection-copy-error:${terminalId}`, {
+            message: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }, 0);
+    };
+
     inst.element.addEventListener("mousedown", handleMiddleMouseDown, true);
+    inst.element.addEventListener("mousedown", handleOptionSelectionMouseDown, true);
+    inst.element.addEventListener("mouseup", handleOptionSelectionMouseUp, true);
+    inst.element.addEventListener("dblclick", handleOptionDoubleClick, true);
 
     // Sync terminal theme on remount
     inst.xterm.options.theme = useColorSchemeStore.getState().getActiveScheme().terminal;
@@ -701,6 +767,9 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       searchAddonRef.current = null;
 
       inst.element.removeEventListener("mousedown", handleMiddleMouseDown, true);
+      inst.element.removeEventListener("mousedown", handleOptionSelectionMouseDown, true);
+      inst.element.removeEventListener("mouseup", handleOptionSelectionMouseUp, true);
+      inst.element.removeEventListener("dblclick", handleOptionDoubleClick, true);
 
       // Detach the element from the DOM but do NOT dispose the xterm.
       // It will be re-attached if the component remounts (layout change).

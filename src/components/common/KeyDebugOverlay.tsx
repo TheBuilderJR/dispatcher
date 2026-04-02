@@ -97,7 +97,7 @@ export function KeyDebugOverlay() {
             `${sessions[entry.terminalId]?.title ?? entry.terminalId} (${entry.terminalId})`,
             `hash=${entry.hash}`,
             `prev=${entry.previousHash ?? "none"}`,
-            `changed=${String(entry.changed)} done=${String(entry.isPossiblyDone)}`,
+            `changed=${String(entry.changed)} done=${String(entry.isPossiblyDone)} longInactive=${String(entry.isLongInactive)}`,
           ].join("\n")),
         ].join("\n");
 
@@ -195,6 +195,7 @@ export function KeyDebugOverlay() {
                   `prev=${entry.previousHash ?? "none"}`,
                   `changed=${String(entry.changed)}`,
                   `done=${String(entry.isPossiblyDone)}`,
+                  `longInactive=${String(entry.isLongInactive)}`,
                 ].join("\n")}
               </span>
               <img

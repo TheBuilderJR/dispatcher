@@ -8,6 +8,7 @@ describe("useTerminalStore", () => {
       const session = useTerminalStore.getState().sessions["t1"];
       expect(session.notes).toBe("");
       expect(session.isPossiblyDone).toBe(false);
+      expect(session.isLongInactive).toBe(false);
       expect(session.isRecentlyFocused).toBe(false);
       expect(session.title).toBe("My Term");
     });
@@ -67,13 +68,21 @@ describe("useTerminalStore", () => {
     });
   });
 
+  describe("setLongInactive", () => {
+    it("updates long inactivity state", () => {
+      useTerminalStore.getState().addSession("t1", "First");
+      useTerminalStore.getState().setLongInactive("t1", true);
+      expect(useTerminalStore.getState().sessions["t1"].isLongInactive).toBe(true);
+    });
+  });
+
   describe("persist merge", () => {
     it("preserves notes and resets runtime screenshot state", () => {
       const { merge } = (useTerminalStore as any).persist.getOptions();
       const persisted = {
         sessions: {
-          t1: { id: "t1", title: "T1", notes: "hello", isPossiblyDone: true, isRecentlyFocused: true },
-          t2: { id: "t2", title: "T2", notes: "", isPossiblyDone: true, isRecentlyFocused: true },
+          t1: { id: "t1", title: "T1", notes: "hello", isPossiblyDone: true, isLongInactive: true, isRecentlyFocused: true },
+          t2: { id: "t2", title: "T2", notes: "", isPossiblyDone: true, isLongInactive: true, isRecentlyFocused: true },
         },
         activeTerminalId: "t1",
       };
@@ -82,6 +91,8 @@ describe("useTerminalStore", () => {
       expect(result.sessions["t2"].notes).toBe("");
       expect(result.sessions["t1"].isPossiblyDone).toBe(false);
       expect(result.sessions["t2"].isPossiblyDone).toBe(false);
+      expect(result.sessions["t1"].isLongInactive).toBe(false);
+      expect(result.sessions["t2"].isLongInactive).toBe(false);
       expect(result.sessions["t1"].isRecentlyFocused).toBe(false);
       expect(result.sessions["t2"].isRecentlyFocused).toBe(false);
     });
