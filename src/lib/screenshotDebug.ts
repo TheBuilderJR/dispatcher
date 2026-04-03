@@ -7,6 +7,8 @@ export interface ScreenshotDebugEntry {
   hash: string;
   previousHash: string | null;
   changed: boolean;
+  hasDetectedActivity: boolean;
+  isNeedsAttention: boolean;
   isPossiblyDone: boolean;
   isLongInactive: boolean;
   imageDataUrl: string;

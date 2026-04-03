@@ -3,6 +3,9 @@ export interface TerminalSession {
   title: string;
   notes: string;
   cwd?: string;
+  hasDetectedActivity: boolean;
+  lastUserInputAt: number;
+  isNeedsAttention: boolean;
   isPossiblyDone: boolean;
   isLongInactive: boolean;
   isRecentlyFocused: boolean;

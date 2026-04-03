@@ -707,6 +707,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       if (data.includes("\r")) {
         useTerminalStore.getState().updateCwd(terminalId, undefined);
       }
+      useTerminalStore.getState().markTerminalActivity(terminalId);
       pushKeyDebug(`pty.write-request:${terminalId}`, describeTerminalData(data));
       writeTerminal(terminalId, data).catch(() => {});
     });

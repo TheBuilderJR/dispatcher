@@ -8,7 +8,10 @@ interface TerminalStore {
 
   addSession: (id: string, title?: string, cwd?: string) => void;
   removeSession: (id: string) => void;
+  markTerminalActivity: (id: string) => void;
   setActiveTerminal: (id: string | null) => void;
+  setDetectedActivity: (id: string, hasDetectedActivity: boolean) => void;
+  setNeedsAttention: (id: string, isNeedsAttention: boolean) => void;
   setPossiblyDone: (id: string, isPossiblyDone: boolean) => void;
   setLongInactive: (id: string, isLongInactive: boolean) => void;
   setRecentlyFocused: (id: string, isRecentlyFocused: boolean) => void;
@@ -45,6 +48,9 @@ export const useTerminalStore = create<TerminalStore>()(
               title: title ?? `Terminal ${terminalCounter}`,
               notes: "",
               cwd,
+              hasDetectedActivity: false,
+              lastUserInputAt: 0,
+              isNeedsAttention: false,
               isPossiblyDone: false,
               isLongInactive: false,
               isRecentlyFocused: false,
@@ -71,6 +77,29 @@ export const useTerminalStore = create<TerminalStore>()(
         });
       },
 
+      markTerminalActivity: (id) => {
+        set((state) => {
+          const session = state.sessions[id];
+          if (!session) {
+            return state;
+          }
+
+          return {
+            sessions: {
+              ...state.sessions,
+              [id]: {
+                ...session,
+                hasDetectedActivity: true,
+                lastUserInputAt: Date.now(),
+                isNeedsAttention: false,
+                isPossiblyDone: false,
+                isLongInactive: false,
+              },
+            },
+          };
+        });
+      },
+
       setActiveTerminal: (id) => {
         if (id) {
           set((state) => {
@@ -82,7 +111,12 @@ export const useTerminalStore = create<TerminalStore>()(
               activeTerminalId: id,
               sessions: {
                 ...state.sessions,
-                [id]: { ...session, isRecentlyFocused: true },
+                [id]: {
+                  ...session,
+                  isNeedsAttention: false,
+                  isPossiblyDone: session.isNeedsAttention ? true : session.isPossiblyDone,
+                  isRecentlyFocused: true,
+                },
               },
             };
           });
@@ -100,6 +134,30 @@ export const useTerminalStore = create<TerminalStore>()(
 
         set({ activeTerminalId: null });
       },
+
+      setDetectedActivity: (id, hasDetectedActivity) =>
+        set((state) => {
+          const session = state.sessions[id];
+          if (!session || session.hasDetectedActivity === hasDetectedActivity) return state;
+          return {
+            sessions: {
+              ...state.sessions,
+              [id]: { ...session, hasDetectedActivity },
+            },
+          };
+        }),
+
+      setNeedsAttention: (id, isNeedsAttention) =>
+        set((state) => {
+          const session = state.sessions[id];
+          if (!session || session.isNeedsAttention === isNeedsAttention) return state;
+          return {
+            sessions: {
+              ...state.sessions,
+              [id]: { ...session, isNeedsAttention },
+            },
+          };
+        }),
 
       setPossiblyDone: (id, isPossiblyDone) =>
         set((state) => {
@@ -177,6 +235,9 @@ export const useTerminalStore = create<TerminalStore>()(
           updated[id] = {
             ...session,
             notes: session.notes ?? "",
+            hasDetectedActivity: false,
+            lastUserInputAt: 0,
+            isNeedsAttention: false,
             isPossiblyDone: false,
             isLongInactive: false,
             isRecentlyFocused: false,

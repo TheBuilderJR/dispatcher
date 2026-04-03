@@ -45,13 +45,12 @@ export function useTerminalScreenshotMonitor() {
   useEffect(() => {
     const previousHashes = new Map<string, string>();
     const lastChangedAt = new Map<string, number>();
-    const idleEligibleSince = new Map<string, number>();
+    const acknowledgedAt = new Map<string, number>();
     const scheduledSamples = new Set<number>();
     let isSampling = false;
     let isDisposed = false;
-    let previousActiveTabRootTerminalId = getActiveTabRootTerminalId();
 
-    const resetIdleWindowForTab = (
+    const acknowledgeTab = (
       tabRootTerminalId: string | null,
       sessionIds: Set<string>,
       now: number
@@ -62,23 +61,16 @@ export function useTerminalScreenshotMonitor() {
 
       const store = useTerminalStore.getState();
       for (const terminalId of getTabTerminalIds(tabRootTerminalId, sessionIds)) {
-        idleEligibleSince.set(terminalId, now);
-        store.setPossiblyDone(terminalId, false);
-        store.setLongInactive(terminalId, false);
+        const session = store.sessions[terminalId];
+        acknowledgedAt.set(terminalId, now);
+        if (session?.isNeedsAttention) {
+          store.setNeedsAttention(terminalId, false);
+          store.setPossiblyDone(terminalId, true);
+        }
       }
     };
 
-    const syncActiveTabIdleWindow = (sessionIds: Set<string>, now: number) => {
-      const activeTabRootTerminalId = getActiveTabRootTerminalId();
-      if (previousActiveTabRootTerminalId !== activeTabRootTerminalId) {
-        resetIdleWindowForTab(previousActiveTabRootTerminalId, sessionIds, now);
-      }
-      resetIdleWindowForTab(activeTabRootTerminalId, sessionIds, now);
-      previousActiveTabRootTerminalId = activeTabRootTerminalId;
-      return new Set(getTabTerminalIds(activeTabRootTerminalId, sessionIds));
-    };
-
-    const sampleAllTerminals = async () => {
+    const sampleTerminals = async (terminalIds: string[]) => {
       if (isSampling || isDisposed) {
         return;
       }
@@ -87,20 +79,25 @@ export function useTerminalScreenshotMonitor() {
       const now = Date.now();
       try {
         const store = useTerminalStore.getState();
-        const terminalIds = Object.keys(store.sessions);
-        const activeIds = new Set(terminalIds);
-        const activeTabTerminalIds = syncActiveTabIdleWindow(activeIds, now);
+        const activeTabTerminalIds = new Set(
+          getTabTerminalIds(
+            getActiveTabRootTerminalId(),
+            new Set(Object.keys(store.sessions))
+          )
+        );
+        const activeIds = new Set(Object.keys(store.sessions));
 
         for (const terminalId of previousHashes.keys()) {
           if (!activeIds.has(terminalId)) {
             previousHashes.delete(terminalId);
             lastChangedAt.delete(terminalId);
-            idleEligibleSince.delete(terminalId);
+            acknowledgedAt.delete(terminalId);
           }
         }
 
         for (const terminalId of terminalIds) {
-          ensureTerminalScreenshotTarget(terminalId, store.sessions[terminalId]?.cwd);
+          const session = store.sessions[terminalId];
+          ensureTerminalScreenshotTarget(terminalId, session?.cwd);
           const screenshot = captureTerminalScreenshot(terminalId);
           if (screenshot === null) {
             continue;
@@ -112,35 +109,60 @@ export function useTerminalScreenshotMonitor() {
           }
 
           const previousHash = previousHashes.get(terminalId) ?? null;
-          const changed = previousHash !== hash;
+          const isBaselineCapture = previousHash === null;
+          const changed = !isBaselineCapture && previousHash !== hash;
           const changedAt = changed ? now : (lastChangedAt.get(terminalId) ?? now);
-          const idleStartedAt = Math.max(
-            changedAt,
-            idleEligibleSince.get(terminalId) ?? changedAt
-          );
+          const lastUserInputAt = session?.lastUserInputAt ?? 0;
+          const effectiveChangedAt = Math.max(changedAt, lastUserInputAt);
+          const hasDetectedActivity =
+            (session?.hasDetectedActivity ?? false) || lastUserInputAt > 0;
+          const acknowledgedTime = acknowledgedAt.get(terminalId) ?? 0;
+          const hasAcknowledgedCurrentOutput =
+            hasDetectedActivity && acknowledgedTime >= effectiveChangedAt;
+          const idleStartedAt = hasAcknowledgedCurrentOutput
+            ? Math.max(effectiveChangedAt, acknowledgedTime)
+            : effectiveChangedAt;
           const isActiveTabTerminal = activeTabTerminalIds.has(terminalId);
-          const isPossiblyDone =
-            !isActiveTabTerminal &&
+          if (changed && isActiveTabTerminal) {
+            acknowledgedAt.set(terminalId, now);
+          }
+          const isNeedsAttention =
+            hasDetectedActivity &&
             !changed &&
-            now - idleStartedAt >= SCREENSHOT_INACTIVITY_MS;
+            !hasAcknowledgedCurrentOutput &&
+            now - effectiveChangedAt >= SCREENSHOT_INACTIVITY_MS;
           const isLongInactive =
-            !isActiveTabTerminal &&
+            hasDetectedActivity &&
             !changed &&
             now - idleStartedAt >= SCREENSHOT_LONG_INACTIVITY_MS;
+          const isPossiblyDone =
+            hasDetectedActivity &&
+            !changed &&
+            !isNeedsAttention &&
+            hasAcknowledgedCurrentOutput &&
+            !isLongInactive &&
+            now - idleStartedAt >= SCREENSHOT_INACTIVITY_MS;
+          const shouldKeepBrownUntilInput =
+            (session?.isPossiblyDone ?? false) &&
+            lastUserInputAt <= acknowledgedTime;
+          const nextNeedsAttention = shouldKeepBrownUntilInput ? false : (isNeedsAttention && !isLongInactive);
+          const nextPossiblyDone = shouldKeepBrownUntilInput
+            ? !isLongInactive
+            : isPossiblyDone;
 
           previousHashes.set(terminalId, hash);
           lastChangedAt.set(terminalId, changedAt);
-          if (isActiveTabTerminal) {
-            idleEligibleSince.set(terminalId, now);
-          }
-          store.setPossiblyDone(terminalId, isPossiblyDone);
+          store.setNeedsAttention(terminalId, nextNeedsAttention);
+          store.setPossiblyDone(terminalId, nextPossiblyDone);
           store.setLongInactive(terminalId, isLongInactive);
           pushScreenshotDebug({
             terminalId,
             hash,
             previousHash,
             changed,
-            isPossiblyDone,
+            hasDetectedActivity,
+            isNeedsAttention: nextNeedsAttention,
+            isPossiblyDone: nextPossiblyDone,
             isLongInactive,
             imageDataUrl: screenshot,
           });
@@ -148,6 +170,11 @@ export function useTerminalScreenshotMonitor() {
       } finally {
         isSampling = false;
       }
+    };
+
+    const sampleAllTerminals = async () => {
+      const terminalIds = Object.keys(useTerminalStore.getState().sessions);
+      await sampleTerminals(terminalIds);
     };
 
     const scheduleSample = (delayMs: number) => {
@@ -161,6 +188,7 @@ export function useTerminalScreenshotMonitor() {
     void sampleAllTerminals();
     scheduleSample(500);
     scheduleSample(1500);
+    acknowledgeTab(getActiveTabRootTerminalId(), new Set(Object.keys(useTerminalStore.getState().sessions)), Date.now());
 
     let lastSessionSignature = Object.keys(useTerminalStore.getState().sessions).sort().join("|");
     const unsubscribeSessions = useTerminalStore.subscribe((state) => {
@@ -179,7 +207,7 @@ export function useTerminalScreenshotMonitor() {
       }
 
       const now = Date.now();
-      syncActiveTabIdleWindow(new Set(Object.keys(state.sessions)), now);
+      acknowledgeTab(getActiveTabRootTerminalId(), new Set(Object.keys(state.sessions)), now);
     });
 
     const intervalId = window.setInterval(() => {

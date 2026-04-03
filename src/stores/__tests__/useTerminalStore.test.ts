@@ -7,6 +7,9 @@ describe("useTerminalStore", () => {
       useTerminalStore.getState().addSession("t1", "My Term");
       const session = useTerminalStore.getState().sessions["t1"];
       expect(session.notes).toBe("");
+      expect(session.hasDetectedActivity).toBe(false);
+      expect(session.lastUserInputAt).toBe(0);
+      expect(session.isNeedsAttention).toBe(false);
       expect(session.isPossiblyDone).toBe(false);
       expect(session.isLongInactive).toBe(false);
       expect(session.isRecentlyFocused).toBe(false);
@@ -68,6 +71,49 @@ describe("useTerminalStore", () => {
     });
   });
 
+  describe("setNeedsAttention", () => {
+    it("updates screenshot-derived attention state", () => {
+      useTerminalStore.getState().addSession("t1", "First");
+      useTerminalStore.getState().setNeedsAttention("t1", true);
+      expect(useTerminalStore.getState().sessions["t1"].isNeedsAttention).toBe(true);
+    });
+  });
+
+  describe("setDetectedActivity", () => {
+    it("updates screenshot-derived detected activity state", () => {
+      useTerminalStore.getState().addSession("t1", "First");
+      useTerminalStore.getState().setDetectedActivity("t1", true);
+      expect(useTerminalStore.getState().sessions["t1"].hasDetectedActivity).toBe(true);
+    });
+  });
+
+  describe("markTerminalActivity", () => {
+    it("marks terminal as active and clears inactive state", () => {
+      useTerminalStore.getState().addSession("t1", "First");
+      useTerminalStore.getState().setNeedsAttention("t1", true);
+      useTerminalStore.getState().setPossiblyDone("t1", true);
+      useTerminalStore.getState().setLongInactive("t1", true);
+      useTerminalStore.getState().markTerminalActivity("t1");
+      const session = useTerminalStore.getState().sessions["t1"];
+      expect(session.hasDetectedActivity).toBe(true);
+      expect(session.lastUserInputAt).toBeGreaterThan(0);
+      expect(session.isNeedsAttention).toBe(false);
+      expect(session.isPossiblyDone).toBe(false);
+      expect(session.isLongInactive).toBe(false);
+    });
+  });
+
+  describe("setActiveTerminal", () => {
+    it("acknowledges pulsing attention state as seen idle", () => {
+      useTerminalStore.getState().addSession("t1", "First");
+      useTerminalStore.getState().setNeedsAttention("t1", true);
+      useTerminalStore.getState().setActiveTerminal("t1");
+      const session = useTerminalStore.getState().sessions["t1"];
+      expect(session.isNeedsAttention).toBe(false);
+      expect(session.isPossiblyDone).toBe(true);
+    });
+  });
+
   describe("setLongInactive", () => {
     it("updates long inactivity state", () => {
       useTerminalStore.getState().addSession("t1", "First");
@@ -81,14 +127,20 @@ describe("useTerminalStore", () => {
       const { merge } = (useTerminalStore as any).persist.getOptions();
       const persisted = {
         sessions: {
-          t1: { id: "t1", title: "T1", notes: "hello", isPossiblyDone: true, isLongInactive: true, isRecentlyFocused: true },
-          t2: { id: "t2", title: "T2", notes: "", isPossiblyDone: true, isLongInactive: true, isRecentlyFocused: true },
+          t1: { id: "t1", title: "T1", notes: "hello", hasDetectedActivity: true, lastUserInputAt: 123, isNeedsAttention: true, isPossiblyDone: true, isLongInactive: true, isRecentlyFocused: true },
+          t2: { id: "t2", title: "T2", notes: "", hasDetectedActivity: true, lastUserInputAt: 456, isNeedsAttention: true, isPossiblyDone: true, isLongInactive: true, isRecentlyFocused: true },
         },
         activeTerminalId: "t1",
       };
       const result = merge(persisted, { sessions: {}, activeTerminalId: null });
       expect(result.sessions["t1"].notes).toBe("hello");
       expect(result.sessions["t2"].notes).toBe("");
+      expect(result.sessions["t1"].hasDetectedActivity).toBe(false);
+      expect(result.sessions["t2"].hasDetectedActivity).toBe(false);
+      expect(result.sessions["t1"].lastUserInputAt).toBe(0);
+      expect(result.sessions["t2"].lastUserInputAt).toBe(0);
+      expect(result.sessions["t1"].isNeedsAttention).toBe(false);
+      expect(result.sessions["t2"].isNeedsAttention).toBe(false);
       expect(result.sessions["t1"].isPossiblyDone).toBe(false);
       expect(result.sessions["t2"].isPossiblyDone).toBe(false);
       expect(result.sessions["t1"].isLongInactive).toBe(false);
