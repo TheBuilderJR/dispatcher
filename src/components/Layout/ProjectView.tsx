@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
+import { useUiStore } from "../../stores/useUiStore";
 import { DetailPanel } from "../Terminal/DetailPanel";
 import { SplitContainer } from "./SplitContainer";
 
@@ -31,7 +32,8 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
   const layout = useLayoutStore((s) => s.layouts[layoutId]);
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
   const [detailWidth, setDetailWidth] = useState(getInitialDetailPanelWidth);
-  const [detailCollapsed, setDetailCollapsed] = useState(false);
+  const detailCollapsed = useUiStore((s) => s.isDetailPanelCollapsed);
+  const setDetailPanelCollapsed = useUiStore((s) => s.setDetailPanelCollapsed);
 
   const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -78,7 +80,7 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
             terminalId={layoutId}
             onSplitHorizontal={() => onSplitPane(splitTarget, "horizontal")}
             onSplitVertical={() => onSplitPane(splitTarget, "vertical")}
-            onCollapse={() => setDetailCollapsed(true)}
+            onCollapse={() => setDetailPanelCollapsed(true)}
             style={{ width: detailWidth, minWidth: detailWidth }}
           />
           <div
@@ -90,7 +92,7 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
       {detailCollapsed && (
         <button
           className="detail-expand-btn"
-          onClick={() => setDetailCollapsed(false)}
+          onClick={() => setDetailPanelCollapsed(false)}
           title="Show Notes Panel"
         >
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">

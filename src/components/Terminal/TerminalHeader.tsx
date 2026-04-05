@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useRef, useEffect, useCallback } from "react";
 import { StatusDot } from "../common/StatusDot";
 import { EditableText } from "../common/EditableText";
 import { useTerminalStore } from "../../stores/useTerminalStore";
+import { useUiStore } from "../../stores/useUiStore";
 
 interface TerminalHeaderProps {
   terminalId: string;
@@ -18,7 +19,9 @@ export function TerminalHeader({
   const session = useTerminalStore((s) => s.sessions[terminalId]);
   const updateTitle = useTerminalStore((s) => s.updateTitle);
   const updateNotes = useTerminalStore((s) => s.updateNotes);
-  const [notesOpen, setNotesOpen] = useState(false);
+  const notesOpen = useUiStore((s) => s.isTerminalNotesOpen);
+  const setTerminalNotesOpen = useUiStore((s) => s.setTerminalNotesOpen);
+  const toggleTerminalNotesOpen = useUiStore((s) => s.toggleTerminalNotesOpen);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const autoResize = useCallback(() => {
@@ -53,7 +56,7 @@ export function TerminalHeader({
           />
           <button
             className="terminal-notes-toggle"
-            onClick={() => setNotesOpen((o) => !o)}
+            onClick={toggleTerminalNotesOpen}
             title={notesOpen ? "Hide notes" : "Show notes"}
           >
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -78,7 +81,7 @@ export function TerminalHeader({
             }}
             onKeyDown={(e) => {
               if (e.key === "Escape") {
-                setNotesOpen(false);
+                setTerminalNotesOpen(false);
               }
               // Let tab-cycling shortcuts bubble to the global handler
               if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.code === "BracketLeft" || e.code === "BracketRight")) {
