@@ -190,6 +190,10 @@ function shouldSuppressTransientFocusSequence(terminalId: string, data: string):
   return true;
 }
 
+function isTransientFocusSequence(data: string): boolean {
+  return data === "\u001b[I" || data === "\u001b[O";
+}
+
 // ---------------------------------------------------------------------------
 // WebGL addon policy:
 // - default off (opt-in only via localStorage key dispatcher.webgl.enabled=1)
@@ -707,7 +711,9 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       if (data.includes("\r")) {
         useTerminalStore.getState().updateCwd(terminalId, undefined);
       }
-      useTerminalStore.getState().markTerminalActivity(terminalId);
+      if (!isTransientFocusSequence(data)) {
+        useTerminalStore.getState().markTerminalActivity(terminalId);
+      }
       pushKeyDebug(`pty.write-request:${terminalId}`, describeTerminalData(data));
       writeTerminal(terminalId, data).catch(() => {});
     });
