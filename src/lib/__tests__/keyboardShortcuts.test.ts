@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   getCtrlLetterControlCharacter,
+  getMacDeleteSequence,
   getMacOptionMetaSequence,
   isEventInsideTerminal,
   isPlainCtrlLetterShortcut,
@@ -90,6 +91,48 @@ describe("keyboardShortcuts", () => {
         altKey: true,
         shiftKey: false,
         code: "KeyQ",
+      })
+    ).toBeNull();
+  });
+
+  it("maps mac delete chords to shell-friendly delete sequences", () => {
+    expect(
+      getMacDeleteSequence({
+        ctrlKey: false,
+        metaKey: false,
+        altKey: true,
+        shiftKey: false,
+        code: "Backspace",
+      })
+    ).toBe("\u0017");
+
+    expect(
+      getMacDeleteSequence({
+        ctrlKey: false,
+        metaKey: true,
+        altKey: false,
+        shiftKey: false,
+        code: "Backspace",
+      })
+    ).toBe("\u0015");
+
+    expect(
+      getMacDeleteSequence({
+        ctrlKey: false,
+        metaKey: true,
+        altKey: true,
+        shiftKey: false,
+        code: "Backspace",
+      })
+    ).toBeNull();
+
+    expect(
+      getMacDeleteSequence({
+        ctrlKey: false,
+        metaKey: false,
+        altKey: true,
+        shiftKey: false,
+        code: "KeyH",
       })
     ).toBeNull();
   });

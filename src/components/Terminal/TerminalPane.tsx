@@ -9,6 +9,7 @@ import { useTerminalStore } from "../../stores/useTerminalStore";
 import { ContextMenu } from "../common/ContextMenu";
 import {
   getCtrlLetterControlCharacter,
+  getMacDeleteSequence,
   getMacOptionMetaSequence,
   suppressMacCtrlChordTextInput,
 } from "../../lib/keyboardShortcuts";
@@ -142,6 +143,29 @@ export function TerminalPane({
       // transform e.key for certain Ctrl combinations (e.g. Ctrl+O
       // becomes "insert newline" and e.key is no longer "o").
       if (isMac) {
+        const deleteSequence = getMacDeleteSequence(e);
+        if (deleteSequence) {
+          pushKeyDebug(`terminal.delete-sequence:${terminalId}`, {
+            event: describeKeyboardEvent(e),
+            data: describeTerminalData(deleteSequence),
+          });
+          if (e.repeat) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            const cleanupSuppression = suppressMacCtrlChordTextInput(e.target, document);
+            scheduleMacTextInputSuppressionCleanup(cleanupSuppression);
+            return;
+          }
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          const cleanupSuppression = suppressMacCtrlChordTextInput(e.target, document);
+          scheduleMacTextInputSuppressionCleanup(cleanupSuppression);
+          sendSyntheticTerminalInput(terminalId, deleteSequence);
+          return;
+        }
+
         const controlChar = getCtrlLetterControlCharacter(e);
         if (controlChar) {
           pushKeyDebug(`terminal.ctrl-sequence:${terminalId}`, {

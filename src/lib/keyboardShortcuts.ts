@@ -25,12 +25,29 @@ export function getCtrlLetterControlCharacter(
   return String.fromCharCode(match[1].charCodeAt(0) - 64);
 }
 
+export function getMacDeleteSequence(
+  event: Pick<KeyboardEvent, "ctrlKey" | "metaKey" | "altKey" | "shiftKey" | "code">
+): string | null {
+  if (event.code !== "Backspace" || event.ctrlKey || event.shiftKey) {
+    return null;
+  }
+
+  if (event.metaKey && !event.altKey) {
+    return "\u0015";
+  }
+
+  if (event.altKey && !event.metaKey) {
+    return "\u0017";
+  }
+
+  return null;
+}
+
 const MAC_OPTION_META_CODE_MAP: Record<string, string> = {
   Space: " ",
   Tab: "\t",
   Enter: "\r",
   Escape: "\u001b",
-  Backspace: "\u007f",
   Minus: "-",
   Equal: "=",
   BracketLeft: "[",
