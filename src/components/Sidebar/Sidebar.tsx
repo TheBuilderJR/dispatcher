@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
+import { useLayoutStore } from "../../stores/useLayoutStore";
+import { findLayoutKeyForTerminal } from "../../lib/layoutUtils";
 import { ProjectNode } from "./ProjectNode";
 import { ContextMenu } from "../common/ContextMenu";
 import { HotkeyHelp } from "../common/HotkeyHelp";
@@ -42,6 +44,10 @@ export function Sidebar({
   const reorderChild = useProjectStore((s) => s.reorderChild);
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
   const setActiveTerminal = useTerminalStore((s) => s.setActiveTerminal);
+  const layouts = useLayoutStore((s) => s.layouts);
+  const activeSidebarTerminalId = activeTerminalId
+    ? findLayoutKeyForTerminal(layouts, activeTerminalId) ?? activeTerminalId
+    : null;
 
   const callbacksRef = useRef({ reorderProject, onMoveTerminal, reorderChild });
   callbacksRef.current = { reorderProject, onMoveTerminal, reorderChild };
@@ -135,7 +141,7 @@ export function Sidebar({
             key={project.id}
             project={project}
             isActive={project.id === activeProjectId}
-            activeTerminalId={activeTerminalId}
+            activeTerminalId={activeSidebarTerminalId}
             onSelect={() => setActiveProject(project.id)}
             onTerminalClick={(terminalId) => {
               setActiveProject(project.id);
