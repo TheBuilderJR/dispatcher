@@ -31,6 +31,16 @@ function formatTime(entry: KeyDebugEntry): string {
   return `${entry.timestamp}.${String(entry.timestampMs % 1000).padStart(3, "0")}`;
 }
 
+function formatScreenshotComponents(entry: ScreenshotDebugEntry): string | null {
+  if (!entry.componentTerminalIds || !entry.componentHashes) {
+    return null;
+  }
+
+  return entry.componentTerminalIds
+    .map((terminalId, index) => `${terminalId}:${entry.componentHashes?.[index] ?? "missing"}`)
+    .join(", ");
+}
+
 export function KeyDebugOverlay() {
   const [entries, setEntries] = useState<KeyDebugEntry[]>(() => getKeyDebugEntries());
   const [screenshotEntries, setScreenshotEntries] = useState<ScreenshotDebugEntry[]>(() => getScreenshotDebugEntries());
@@ -97,8 +107,11 @@ export function KeyDebugOverlay() {
             `${sessions[entry.terminalId]?.title ?? entry.terminalId} (${entry.terminalId})`,
             `hash=${entry.hash}`,
             `prev=${entry.previousHash ?? "none"}`,
+            formatScreenshotComponents(entry)
+              ? `components=${formatScreenshotComponents(entry)}`
+              : null,
             `changed=${String(entry.changed)} detected=${String(entry.hasDetectedActivity)} attention=${String(entry.isNeedsAttention)} done=${String(entry.isPossiblyDone)} longInactive=${String(entry.isLongInactive)}`,
-          ].join("\n")),
+          ].filter((line): line is string => line !== null).join("\n")),
         ].join("\n");
 
     try {
@@ -193,12 +206,15 @@ export function KeyDebugOverlay() {
                   `terminal=${entry.terminalId}`,
                   `hash=${entry.hash}`,
                   `prev=${entry.previousHash ?? "none"}`,
+                  formatScreenshotComponents(entry)
+                    ? `components=${formatScreenshotComponents(entry)}`
+                    : null,
                   `changed=${String(entry.changed)}`,
                   `detected=${String(entry.hasDetectedActivity)}`,
                   `attention=${String(entry.isNeedsAttention)}`,
                   `done=${String(entry.isPossiblyDone)}`,
                   `longInactive=${String(entry.isLongInactive)}`,
-                ].join("\n")}
+                ].filter((line): line is string => line !== null).join("\n")}
               </span>
               <img
                 className="key-debug-screenshot-image"

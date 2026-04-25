@@ -6,6 +6,8 @@ export interface ScreenshotDebugEntry {
   terminalId: string;
   hash: string;
   previousHash: string | null;
+  componentTerminalIds?: string[];
+  componentHashes?: string[];
   changed: boolean;
   hasDetectedActivity: boolean;
   isNeedsAttention: boolean;

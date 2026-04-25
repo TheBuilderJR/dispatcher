@@ -1,7 +1,12 @@
 import { useEffect } from "react";
 import { captureTerminalScreenshot, ensureTerminalScreenshotTarget } from "./useTerminalBridge";
-import { findLayoutKeyForTerminal, findTerminalIds } from "../lib/layoutUtils";
+import { findLayoutKeyForTerminal } from "../lib/layoutUtils";
 import { pushScreenshotDebug } from "../lib/screenshotDebug";
+import {
+  buildCompoundScreenshotHashInput,
+  getTabRootTerminalIds,
+  getTabTerminalIds,
+} from "../lib/terminalScreenshotHash";
 import { useLayoutStore } from "../stores/useLayoutStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 
@@ -25,30 +30,22 @@ function getActiveTabRootTerminalId(): string | null {
   return findLayoutKeyForTerminal(layouts, activeTerminalId) ?? activeTerminalId;
 }
 
-function getTabTerminalIds(
-  tabRootTerminalId: string | null,
-  sessionIds: Set<string>
-): string[] {
-  if (!tabRootTerminalId) {
-    return [];
-  }
-
-  const layout = useLayoutStore.getState().layouts[tabRootTerminalId];
-  if (!layout) {
-    return sessionIds.has(tabRootTerminalId) ? [tabRootTerminalId] : [];
-  }
-
-  return findTerminalIds(layout).filter((terminalId) => sessionIds.has(terminalId));
-}
-
 export function useTerminalScreenshotMonitor() {
   useEffect(() => {
     const previousHashes = new Map<string, string>();
+    const previousTabSignatures = new Map<string, string>();
     const lastChangedAt = new Map<string, number>();
     const acknowledgedAt = new Map<string, number>();
     const scheduledSamples = new Set<number>();
     let isSampling = false;
     let isDisposed = false;
+
+    const clearTabState = (tabRootTerminalId: string) => {
+      previousHashes.delete(tabRootTerminalId);
+      previousTabSignatures.delete(tabRootTerminalId);
+      lastChangedAt.delete(tabRootTerminalId);
+      acknowledgedAt.delete(tabRootTerminalId);
+    };
 
     const acknowledgeTab = (
       tabRootTerminalId: string | null,
@@ -60,9 +57,10 @@ export function useTerminalScreenshotMonitor() {
       }
 
       const store = useTerminalStore.getState();
-      for (const terminalId of getTabTerminalIds(tabRootTerminalId, sessionIds)) {
+      const layouts = useLayoutStore.getState().layouts;
+      acknowledgedAt.set(tabRootTerminalId, now);
+      for (const terminalId of getTabTerminalIds(layouts, tabRootTerminalId, sessionIds)) {
         const session = store.sessions[terminalId];
-        acknowledgedAt.set(terminalId, now);
         if (session?.isNeedsAttention) {
           store.setNeedsAttention(terminalId, false);
           store.setPossiblyDone(terminalId, true);
@@ -70,7 +68,7 @@ export function useTerminalScreenshotMonitor() {
       }
     };
 
-    const sampleTerminals = async (terminalIds: string[]) => {
+    const sampleTabs = async (tabRootTerminalIds: string[]) => {
       if (isSampling || isDisposed) {
         return;
       }
@@ -79,60 +77,96 @@ export function useTerminalScreenshotMonitor() {
       const now = Date.now();
       try {
         const store = useTerminalStore.getState();
-        const activeTabTerminalIds = new Set(
-          getTabTerminalIds(
-            getActiveTabRootTerminalId(),
-            new Set(Object.keys(store.sessions))
-          )
-        );
-        const activeIds = new Set(Object.keys(store.sessions));
+        const layouts = useLayoutStore.getState().layouts;
+        const sessionIds = new Set(Object.keys(store.sessions));
+        const activeTabRootTerminalId = getActiveTabRootTerminalId();
+        const activeTabRoots = new Set(getTabRootTerminalIds(layouts, sessionIds));
 
-        for (const terminalId of previousHashes.keys()) {
-          if (!activeIds.has(terminalId)) {
-            previousHashes.delete(terminalId);
-            lastChangedAt.delete(terminalId);
-            acknowledgedAt.delete(terminalId);
+        for (const tabRootTerminalId of new Set([
+          ...previousHashes.keys(),
+          ...previousTabSignatures.keys(),
+          ...lastChangedAt.keys(),
+          ...acknowledgedAt.keys(),
+        ])) {
+          if (!activeTabRoots.has(tabRootTerminalId)) {
+            clearTabState(tabRootTerminalId);
           }
         }
 
-        for (const terminalId of terminalIds) {
-          const session = useTerminalStore.getState().sessions[terminalId];
-          if (!session) {
-            continue;
-          }
-          ensureTerminalScreenshotTarget(terminalId, session?.cwd);
-          const screenshot = captureTerminalScreenshot(terminalId);
-          if (screenshot === null) {
+        for (const tabRootTerminalId of tabRootTerminalIds) {
+          const terminalIds = getTabTerminalIds(layouts, tabRootTerminalId, sessionIds);
+          if (terminalIds.length === 0) {
             continue;
           }
 
-          const hash = await hashScreenshot(screenshot);
+          const screenshots: Array<{ terminalId: string; screenshot: string }> = [];
+          let isReady = true;
+          for (const terminalId of terminalIds) {
+            const session = useTerminalStore.getState().sessions[terminalId];
+            if (!session) {
+              isReady = false;
+              break;
+            }
+
+            ensureTerminalScreenshotTarget(terminalId, session.cwd);
+            const screenshot = captureTerminalScreenshot(terminalId);
+            if (screenshot === null) {
+              isReady = false;
+              break;
+            }
+
+            screenshots.push({ terminalId, screenshot });
+          }
+
+          if (!isReady || screenshots.length !== terminalIds.length) {
+            continue;
+          }
+
+          const componentHashes = await Promise.all(
+            screenshots.map(({ screenshot }) => hashScreenshot(screenshot))
+          );
+          const hash =
+            componentHashes.length === 1
+              ? componentHashes[0]
+              : await hashScreenshot(buildCompoundScreenshotHashInput(componentHashes));
           if (isDisposed) {
             return;
           }
 
-          const latestSession = useTerminalStore.getState().sessions[terminalId];
-          if (!latestSession) {
+          const latestStore = useTerminalStore.getState();
+          const latestSessions = terminalIds
+            .map((terminalId) => latestStore.sessions[terminalId])
+            .filter((session): session is NonNullable<typeof session> => session !== undefined);
+          if (latestSessions.length !== terminalIds.length) {
             continue;
           }
 
-          const previousHash = previousHashes.get(terminalId) ?? null;
-          const isBaselineCapture = previousHash === null;
+          const previousHash = previousHashes.get(tabRootTerminalId) ?? null;
+          const tabSignature = terminalIds.join("|");
+          const previousTabSignature = previousTabSignatures.get(tabRootTerminalId) ?? null;
+          const isBaselineCapture =
+            previousHash === null || previousTabSignature !== tabSignature;
           const changed = !isBaselineCapture && previousHash !== hash;
-          const changedAt = changed ? now : (lastChangedAt.get(terminalId) ?? now);
-          const lastUserInputAt = latestSession.lastUserInputAt ?? 0;
+          const changedAt =
+            changed || isBaselineCapture
+              ? now
+              : (lastChangedAt.get(tabRootTerminalId) ?? now);
+          const lastUserInputAt = latestSessions.reduce(
+            (maxTime, session) => Math.max(maxTime, session.lastUserInputAt ?? 0),
+            0
+          );
           const effectiveChangedAt = Math.max(changedAt, lastUserInputAt);
           const hasDetectedActivity =
-            latestSession.hasDetectedActivity || lastUserInputAt > 0;
-          const acknowledgedTime = acknowledgedAt.get(terminalId) ?? 0;
+            latestSessions.some((session) => session.hasDetectedActivity) || lastUserInputAt > 0;
+          const acknowledgedTime = acknowledgedAt.get(tabRootTerminalId) ?? 0;
           const hasAcknowledgedCurrentOutput =
             hasDetectedActivity && acknowledgedTime >= effectiveChangedAt;
           const idleStartedAt = hasAcknowledgedCurrentOutput
             ? Math.max(effectiveChangedAt, acknowledgedTime)
             : effectiveChangedAt;
-          const isActiveTabTerminal = activeTabTerminalIds.has(terminalId);
-          if (changed && isActiveTabTerminal) {
-            acknowledgedAt.set(terminalId, now);
+          const isActiveTab = activeTabRootTerminalId === tabRootTerminalId;
+          if (changed && isActiveTab) {
+            acknowledgedAt.set(tabRootTerminalId, now);
           }
           const isNeedsAttention =
             hasDetectedActivity &&
@@ -150,10 +184,14 @@ export function useTerminalScreenshotMonitor() {
             hasAcknowledgedCurrentOutput &&
             !isLongInactive &&
             now - idleStartedAt >= SCREENSHOT_INACTIVITY_MS;
-          const shouldKeepAttentionUntilFocus = latestSession.isNeedsAttention;
-          const shouldKeepBrownUntilInput =
-            latestSession.isPossiblyDone &&
-            lastUserInputAt <= acknowledgedTime;
+          const shouldKeepAttentionUntilFocus = latestSessions.some(
+            (session) => session.isNeedsAttention
+          );
+          const shouldKeepBrownUntilInput = latestSessions.some(
+            (session) =>
+              session.isPossiblyDone &&
+              (session.lastUserInputAt ?? 0) <= acknowledgedTime
+          );
           const shouldRevertToGreen = changed && !shouldKeepAttentionUntilFocus;
           const nextNeedsAttention = shouldKeepAttentionUntilFocus
             ? true
@@ -171,13 +209,17 @@ export function useTerminalScreenshotMonitor() {
                 : isPossiblyDone;
           const nextLongInactive = nextNeedsAttention ? false : isLongInactive;
 
-          previousHashes.set(terminalId, hash);
-          lastChangedAt.set(terminalId, changedAt);
-          store.setNeedsAttention(terminalId, nextNeedsAttention);
-          store.setPossiblyDone(terminalId, nextPossiblyDone);
-          store.setLongInactive(terminalId, nextLongInactive);
+          previousHashes.set(tabRootTerminalId, hash);
+          previousTabSignatures.set(tabRootTerminalId, tabSignature);
+          lastChangedAt.set(tabRootTerminalId, changedAt);
+          for (const terminalId of terminalIds) {
+            store.setDetectedActivity(terminalId, hasDetectedActivity);
+            store.setNeedsAttention(terminalId, nextNeedsAttention);
+            store.setPossiblyDone(terminalId, nextPossiblyDone);
+            store.setLongInactive(terminalId, nextLongInactive);
+          }
           pushScreenshotDebug({
-            terminalId,
+            terminalId: tabRootTerminalId,
             hash,
             previousHash,
             changed,
@@ -185,7 +227,9 @@ export function useTerminalScreenshotMonitor() {
             isNeedsAttention: nextNeedsAttention,
             isPossiblyDone: nextPossiblyDone,
             isLongInactive: nextLongInactive,
-            imageDataUrl: screenshot,
+            imageDataUrl: screenshots[0].screenshot,
+            componentTerminalIds: terminalIds,
+            componentHashes,
           });
         }
       } finally {
@@ -193,20 +237,22 @@ export function useTerminalScreenshotMonitor() {
       }
     };
 
-    const sampleAllTerminals = async () => {
-      const terminalIds = Object.keys(useTerminalStore.getState().sessions);
-      await sampleTerminals(terminalIds);
+    const sampleAllTabs = async () => {
+      const store = useTerminalStore.getState();
+      const layouts = useLayoutStore.getState().layouts;
+      const sessionIds = new Set(Object.keys(store.sessions));
+      await sampleTabs(getTabRootTerminalIds(layouts, sessionIds));
     };
 
     const scheduleSample = (delayMs: number) => {
       const timeoutId = window.setTimeout(() => {
         scheduledSamples.delete(timeoutId);
-        void sampleAllTerminals();
+        void sampleAllTabs();
       }, delayMs);
       scheduledSamples.add(timeoutId);
     };
 
-    void sampleAllTerminals();
+    void sampleAllTabs();
     scheduleSample(500);
     scheduleSample(1500);
     acknowledgeTab(getActiveTabRootTerminalId(), new Set(Object.keys(useTerminalStore.getState().sessions)), Date.now());
@@ -232,7 +278,7 @@ export function useTerminalScreenshotMonitor() {
     });
 
     const intervalId = window.setInterval(() => {
-      void sampleAllTerminals();
+      void sampleAllTabs();
     }, SCREENSHOT_INTERVAL_MS);
 
     return () => {
