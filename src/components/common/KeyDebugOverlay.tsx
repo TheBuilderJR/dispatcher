@@ -41,6 +41,34 @@ function formatScreenshotComponents(entry: ScreenshotDebugEntry): string | null 
     .join(", ");
 }
 
+function getScreenshotImageItems(
+  entry: ScreenshotDebugEntry,
+  sessions: Record<string, { title: string } | undefined>
+): Array<{ terminalId: string; label: string; imageDataUrl: string }> {
+  const componentTerminalIds = entry.componentTerminalIds;
+  const componentImageDataUrls = entry.componentImageDataUrls;
+
+  if (
+    componentTerminalIds &&
+    componentImageDataUrls &&
+    componentTerminalIds.length === componentImageDataUrls.length
+  ) {
+    return componentTerminalIds.map((terminalId, index) => ({
+      terminalId,
+      label: sessions[terminalId]?.title ?? terminalId,
+      imageDataUrl: componentImageDataUrls[index],
+    }));
+  }
+
+  return [
+    {
+      terminalId: entry.terminalId,
+      label: sessions[entry.terminalId]?.title ?? entry.terminalId,
+      imageDataUrl: entry.imageDataUrl,
+    },
+  ];
+}
+
 export function KeyDebugOverlay() {
   const [entries, setEntries] = useState<KeyDebugEntry[]>(() => getKeyDebugEntries());
   const [screenshotEntries, setScreenshotEntries] = useState<ScreenshotDebugEntry[]>(() => getScreenshotDebugEntries());
@@ -216,11 +244,20 @@ export function KeyDebugOverlay() {
                   `longInactive=${String(entry.isLongInactive)}`,
                 ].filter((line): line is string => line !== null).join("\n")}
               </span>
-              <img
-                className="key-debug-screenshot-image"
-                src={entry.imageDataUrl}
-                alt={`Terminal screenshot for ${sessions[entry.terminalId]?.title ?? entry.terminalId}`}
-              />
+              <div className="key-debug-screenshot-gallery">
+                {getScreenshotImageItems(entry, sessions).map((item) => (
+                  <figure key={`${entry.id}-${item.terminalId}`} className="key-debug-screenshot-card">
+                    <figcaption className="key-debug-screenshot-caption">
+                      {item.label}
+                    </figcaption>
+                    <img
+                      className="key-debug-screenshot-image"
+                      src={item.imageDataUrl}
+                      alt={`Terminal screenshot for ${item.label}`}
+                    />
+                  </figure>
+                ))}
+              </div>
             </div>
           ))
         )}

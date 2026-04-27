@@ -230,6 +230,7 @@ export function useTerminalScreenshotMonitor() {
             imageDataUrl: screenshots[0].screenshot,
             componentTerminalIds: terminalIds,
             componentHashes,
+            componentImageDataUrls: screenshots.map(({ screenshot }) => screenshot),
           });
         }
       } finally {

@@ -285,8 +285,24 @@ html, body, #root {
   grid-template-columns: 92px 132px 1fr;
 }
 
-.key-debug-screenshot-image {
+.key-debug-screenshot-gallery {
   grid-column: 2 / 4;
+  display: grid;
+  gap: 8px;
+}
+
+.key-debug-screenshot-card {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.key-debug-screenshot-caption {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.key-debug-screenshot-image {
   width: 100%;
   max-width: 420px;
   border-radius: 6px;

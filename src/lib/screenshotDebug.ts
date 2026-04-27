@@ -8,6 +8,7 @@ export interface ScreenshotDebugEntry {
   previousHash: string | null;
   componentTerminalIds?: string[];
   componentHashes?: string[];
+  componentImageDataUrls?: string[];
   changed: boolean;
   hasDetectedActivity: boolean;
   isNeedsAttention: boolean;
