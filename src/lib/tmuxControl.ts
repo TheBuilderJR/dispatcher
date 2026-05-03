@@ -37,9 +37,11 @@ import {
   ensureTerminalFrontend,
   focusTerminalInstance,
   getTerminalCellSize,
+  getTerminalViewportSize,
   queueTerminalOutput,
   syncTerminalFrontendSize,
 } from "../hooks/useTerminalBridge";
+import { computeTmuxWindowSizeFromPaneViewport } from "./tmuxSizing";
 
 interface PendingCommand {
   command: string;
@@ -1734,8 +1736,34 @@ export function syncTmuxWindowSize(layoutId: string, widthPx: number, heightPx: 
     return;
   }
 
-  const cols = Math.max(2, Math.floor(widthPx / cellSize.width));
-  const rows = Math.max(1, Math.floor(heightPx / cellSize.height));
+  const activePane = session.panes.get(windowState.activePaneId) ?? null;
+  const totalWindowCols = Math.max(
+    1,
+    ...[...session.panes.values()]
+      .filter((pane) => pane.windowId === windowState.windowId)
+      .map((pane) => pane.left + pane.width)
+  );
+  const totalWindowRows = Math.max(
+    1,
+    ...[...session.panes.values()]
+      .filter((pane) => pane.windowId === windowState.windowId)
+      .map((pane) => pane.top + pane.height)
+  );
+  const viewportSize = getTerminalViewportSize(activePaneTerminalId);
+  const inferredWindowSize = activePane
+    ? computeTmuxWindowSizeFromPaneViewport({
+      viewportWidthPx: viewportSize?.width ?? 0,
+      viewportHeightPx: viewportSize?.height ?? 0,
+      cellWidthPx: cellSize.width,
+      cellHeightPx: cellSize.height,
+      activePaneCols: activePane.width,
+      activePaneRows: activePane.height,
+      totalWindowCols,
+      totalWindowRows,
+    })
+    : null;
+  const cols = inferredWindowSize?.cols ?? Math.max(2, Math.floor(widthPx / cellSize.width));
+  const rows = inferredWindowSize?.rows ?? Math.max(1, Math.floor(heightPx / cellSize.height));
   const nextSize = `${cols}x${rows}`;
   if (session.windowSizes.get(windowState.windowId) === nextSize) {
     return;
@@ -1751,6 +1779,13 @@ export function syncTmuxWindowSize(layoutId: string, widthPx: number, heightPx: 
     heightPx,
     cellWidth: cellSize.width,
     cellHeight: cellSize.height,
+    viewportWidthPx: viewportSize?.width ?? null,
+    viewportHeightPx: viewportSize?.height ?? null,
+    activePaneCols: activePane?.width ?? null,
+    activePaneRows: activePane?.height ?? null,
+    totalWindowCols,
+    totalWindowRows,
+    source: inferredWindowSize ? "pane-viewport" : "outer-canvas",
     size: nextSize,
   });
   void sendCommand(session, `refresh-client -C ${windowState.windowId}:${nextSize}`).catch((error) => {

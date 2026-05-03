@@ -671,6 +671,26 @@ export function getTerminalCellSize(terminalId: string): { width: number; height
   return { width, height };
 }
 
+export function getTerminalViewportSize(terminalId: string): { width: number; height: number } | null {
+  const instance = instances.get(terminalId);
+  if (!instance) {
+    return null;
+  }
+
+  const mountPoint = instance.element.parentElement as HTMLElement | null;
+  if (!mountPoint || mountPoint.id === PARKING_ROOT_ID) {
+    return null;
+  }
+
+  const width = mountPoint.clientWidth;
+  const height = mountPoint.clientHeight;
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  return { width, height };
+}
+
 export function captureTerminalScreenshot(terminalId: string): string | null {
   const instance = instances.get(terminalId);
   if (!instance) {
