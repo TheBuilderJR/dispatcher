@@ -129,7 +129,7 @@ export function ProjectNode({
             e.stopPropagation();
             onNewTerminal();
           }}
-          title="New Terminal (⌘T)"
+          title="New Local Terminal"
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <path d="M8 3V13M3 8H13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
@@ -143,7 +143,7 @@ export function ProjectNode({
           onClose={() => setMenu(null)}
           items={[
             {
-              label: "New Terminal",
+              label: "New Local Terminal",
               icon: (
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                   <path d="M7 3V11M3 7H11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>

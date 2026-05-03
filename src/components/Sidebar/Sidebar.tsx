@@ -79,14 +79,13 @@ export function Sidebar({
     ...(activeProjectId
       ? [
           {
-            label: "New Terminal",
+            label: "New Local Terminal",
             icon: (
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                 <path d="M7 3V11M3 7H11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
               </svg>
             ),
             onClick: () => onNewTerminalInProject(activeProjectId),
-            shortcut: "⌘T",
           },
         ]
       : []),

@@ -22,6 +22,7 @@ import { getTabStatusTerminalIds } from "../lib/terminalScreenshotHash";
 import { useLayoutStore } from "../stores/useLayoutStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 import { describeKeyboardEvent, describeTerminalData, pushKeyDebug } from "../lib/keyDebug";
+import { debugLog } from "../lib/debugLog";
 import { routeTmuxTransportOutput, sendInputToTmuxTerminal } from "../lib/tmuxControl";
 
 // ---------------------------------------------------------------------------
@@ -554,6 +555,32 @@ function renderTerminalBufferScreenshot(instance: TerminalInstance): string | nu
 /** Focus the xterm instance for a given terminal (e.g. after renaming). */
 export function focusTerminalInstance(terminalId: string) {
   instances.get(terminalId)?.xterm.focus();
+}
+
+export function syncTerminalFrontendSize(terminalId: string, cols: number, rows: number) {
+  const instance = instances.get(terminalId);
+  if (!instance) {
+    return;
+  }
+
+  const nextCols = Math.max(2, Math.floor(cols));
+  const nextRows = Math.max(1, Math.floor(rows));
+  if (
+    !Number.isFinite(nextCols)
+    || !Number.isFinite(nextRows)
+    || (instance.xterm.cols === nextCols && instance.xterm.rows === nextRows)
+  ) {
+    return;
+  }
+
+  debugLog("terminal.frontend", "resize", {
+    terminalId,
+    previousCols: instance.xterm.cols,
+    previousRows: instance.xterm.rows,
+    cols: nextCols,
+    rows: nextRows,
+  });
+  instance.xterm.resize(nextCols, nextRows);
 }
 
 export function getTerminalCellSize(terminalId: string): { width: number; height: number } | null {

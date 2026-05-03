@@ -329,18 +329,7 @@ export default function App() {
       const activeProjectId = useProjectStore.getState().activeProjectId;
       const activeTerminalId = useTerminalStore.getState().activeTerminalId ?? undefined;
       const sourceTerminalId = activeProjectId === projectId ? activeTerminalId : undefined;
-      const shouldStayInTmux = isTmuxBackedTerminal(sourceTerminalId);
-      void createTmuxWindowForTerminal(sourceTerminalId ?? "")
-        .then((handled) => {
-          if (!handled && !shouldStayInTmux) {
-            createTerminalInProject(projectId, "Shell", sourceTerminalId);
-          }
-        })
-        .catch(() => {
-          if (!shouldStayInTmux) {
-            createTerminalInProject(projectId, "Shell", sourceTerminalId);
-          }
-        });
+      void createTerminalInProject(projectId, "Shell", sourceTerminalId);
     },
     [createTerminalInProject]
   );

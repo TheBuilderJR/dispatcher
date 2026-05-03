@@ -11,7 +11,12 @@ const {
   writeTerminalMock: vi.fn(async () => {}),
   resizeTerminalMock: vi.fn(async () => {}),
   warmPoolMock: vi.fn(async () => {}),
-  createdTerminals: [] as Array<{ scrollToBottom: ReturnType<typeof vi.fn> }>,
+  createdTerminals: [] as Array<{
+    scrollToBottom: ReturnType<typeof vi.fn>;
+    resize: ReturnType<typeof vi.fn>;
+    cols: number;
+    rows: number;
+  }>,
 }));
 
 vi.mock("@xterm/xterm", () => {
@@ -34,6 +39,10 @@ vi.mock("@xterm/xterm", () => {
     focus = vi.fn();
     clear = vi.fn();
     paste = vi.fn();
+    resize = vi.fn((cols: number, rows: number) => {
+      this.cols = cols;
+      this.rows = rows;
+    });
     refresh = vi.fn();
     dispose = vi.fn();
     onData = vi.fn(() => ({ dispose: vi.fn() }));
@@ -118,6 +127,7 @@ import {
   ensureTerminalScreenshotTarget,
   reflectImmediateTabActivity,
   sendSyntheticTerminalInput,
+  syncTerminalFrontendSize,
 } from "../useTerminalBridge";
 import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
@@ -145,6 +155,16 @@ describe("useTerminalBridge synthetic input", () => {
 
     expect(createdTerminals[0].scrollToBottom).toHaveBeenCalledTimes(1);
     expect(writeTerminalMock).toHaveBeenCalledWith("term-scroll-test", "\u0003");
+  });
+
+  it("resizes an existing xterm frontend to match a tmux pane grid", () => {
+    ensureTerminalScreenshotTarget("term-scroll-test");
+
+    syncTerminalFrontendSize("term-scroll-test", 109, 25);
+
+    expect(createdTerminals[0].resize).toHaveBeenCalledWith(109, 25);
+    expect(createdTerminals[0].cols).toBe(109);
+    expect(createdTerminals[0].rows).toBe(25);
   });
 
   it("clears brown tab status immediately for a tab-root session when a child pane gets input", () => {

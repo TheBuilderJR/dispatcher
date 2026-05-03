@@ -20,7 +20,11 @@ import {
   type TmuxWindowSnapshot,
 } from "./tmuxControlProtocol";
 import { findLayoutKeyForTerminal, findTerminalIds } from "./layoutUtils";
-import { findNodeByTerminalId, findProjectIdForTerminal } from "./treeUtils";
+import {
+  findDisconnectedTmuxWindowPlaceholder,
+  findNodeByTerminalId,
+  findProjectIdForTerminal,
+} from "./treeUtils";
 import { writeTerminal } from "./tauriCommands";
 import { debugLog, debugLogError, previewDebugText } from "./debugLog";
 import {
@@ -29,6 +33,7 @@ import {
   focusTerminalInstance,
   getTerminalCellSize,
   queueTerminalOutput,
+  syncTerminalFrontendSize,
 } from "../hooks/useTerminalBridge";
 
 interface PendingCommand {
@@ -183,34 +188,46 @@ function setLayout(layoutId: string, layout: LayoutNode) {
 
 function findDisconnectedWindowPlaceholder(
   session: TmuxControlSession,
-  windowId: string
+  windowId: string,
+  title?: string
 ): { terminalId: string; nodeId: string } | null {
-  const projectNodes = useProjectStore.getState().nodes;
-  const parent = projectNodes[session.parentNodeId];
-  if (!parent?.children) {
+  const projectState = useProjectStore.getState();
+  const terminalState = useTerminalStore.getState();
+  const placeholder = findDisconnectedTmuxWindowPlaceholder(
+    projectState.projects,
+    projectState.projectOrder,
+    projectState.nodes,
+    terminalState.sessions,
+    windowId,
+    {
+      parentNodeId: session.parentNodeId,
+      projectId: session.projectId,
+      title,
+    }
+  );
+  if (!placeholder) {
     return null;
   }
 
-  for (const childId of parent.children) {
-    const node = projectNodes[childId];
-    if (node?.type !== "terminal" || !node.terminalId) {
-      continue;
-    }
-
-    const terminal = getTerminalSession(node.terminalId);
-    if (
-      terminal?.backendKind === "tmux-window"
-      && !terminal.tmuxControlSessionId
-      && terminal.tmuxWindowId === windowId
-    ) {
-      return {
-        terminalId: node.terminalId,
-        nodeId: childId,
-      };
-    }
+  if (placeholder.parentNodeId && placeholder.parentNodeId !== session.parentNodeId) {
+    debugLog("tmux.session", "rehome disconnected window placeholder", {
+      sessionId: session.id,
+      windowId,
+      title: title ?? null,
+      nodeId: placeholder.nodeId,
+      terminalId: placeholder.terminalId,
+      fromParentNodeId: placeholder.parentNodeId,
+      toParentNodeId: session.parentNodeId,
+      fromProjectId: placeholder.projectId,
+      toProjectId: session.projectId,
+    });
+    useProjectStore.getState().moveNode(placeholder.nodeId, session.parentNodeId);
   }
 
-  return null;
+  return {
+    terminalId: placeholder.terminalId,
+    nodeId: placeholder.nodeId,
+  };
 }
 
 function getDisconnectedPanePlaceholders(
@@ -331,7 +348,7 @@ function upsertWindowProjection(
 ) {
   let windowState = session.windows.get(snapshot.windowId);
   const disconnectedWindowPlaceholder = !windowState
-    ? findDisconnectedWindowPlaceholder(session, snapshot.windowId)
+    ? findDisconnectedWindowPlaceholder(session, snapshot.windowId, snapshot.title)
     : null;
   if (!windowState) {
     const terminalId = disconnectedWindowPlaceholder?.terminalId ?? generateId();
@@ -462,6 +479,8 @@ function upsertWindowProjection(
       }
       ensureTerminalFrontend(terminalId);
     }
+
+    syncTerminalFrontendSize(paneState.terminalId, paneSnapshot.width, paneSnapshot.height);
 
     paneState.left = paneSnapshot.left;
     paneState.top = paneSnapshot.top;
@@ -904,8 +923,11 @@ function handleNotification(session: TmuxControlSession, line: string) {
     return;
   }
 
-  if (line.startsWith("%window-close ")) {
-    const windowId = line.slice("%window-close ".length).trim();
+  if (line.startsWith("%window-close ") || line.startsWith("%unlinked-window-close ")) {
+    const prefix = line.startsWith("%window-close ")
+      ? "%window-close "
+      : "%unlinked-window-close ";
+    const windowId = line.slice(prefix.length).trim();
     if (windowId) {
       removeWindowProjection(session, windowId);
       syncWindowNodeOrder(session);

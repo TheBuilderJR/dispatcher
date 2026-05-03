@@ -7,6 +7,14 @@ export interface VisibleTerminalRef {
   terminalId: string;
 }
 
+export interface DisconnectedTmuxWindowPlaceholderRef {
+  nodeId: string;
+  node: TreeNode;
+  terminalId: string;
+  parentNodeId: string | null;
+  projectId: string | null;
+}
+
 function getOrderedProjectIds(
   projects: Record<string, Project>,
   projectOrder: string[]
@@ -123,4 +131,77 @@ export function findProjectIdForTerminal(
   }
 
   return null;
+}
+
+export function findDisconnectedTmuxWindowPlaceholder(
+  projects: Record<string, Project>,
+  projectOrder: string[],
+  nodes: Record<string, TreeNode>,
+  sessions: Record<string, TerminalSession>,
+  windowId: string,
+  options?: {
+    parentNodeId?: string;
+    projectId?: string;
+    title?: string;
+  }
+): DisconnectedTmuxWindowPlaceholderRef | null {
+  const candidates: DisconnectedTmuxWindowPlaceholderRef[] = [];
+
+  for (const [nodeId, node] of Object.entries(nodes)) {
+    if (node.type !== "terminal" || !node.terminalId) {
+      continue;
+    }
+
+    const session = sessions[node.terminalId];
+    if (
+      !session
+      || session.backendKind !== "tmux-window"
+      || Boolean(session.tmuxControlSessionId)
+      || session.tmuxWindowId !== windowId
+    ) {
+      continue;
+    }
+
+    candidates.push({
+      nodeId,
+      node,
+      terminalId: node.terminalId,
+      parentNodeId: node.parentId,
+      projectId: findProjectIdForNode(projects, projectOrder, nodes, nodeId),
+    });
+  }
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  if (options?.parentNodeId) {
+    const sameParentCandidate = candidates.find(
+      (candidate) => candidate.parentNodeId === options.parentNodeId
+    );
+    if (sameParentCandidate) {
+      return sameParentCandidate;
+    }
+  }
+
+  if (options?.title) {
+    const titleMatches = candidates.filter((candidate) => {
+      const session = sessions[candidate.terminalId];
+      return session?.title === options.title || candidate.node.name === options.title;
+    });
+    if (titleMatches.length > 0) {
+      return titleMatches[0];
+    }
+  }
+
+  if (options?.projectId) {
+    const sameProjectCandidate = candidates.find(
+      (candidate) => candidate.projectId === options.projectId
+    );
+    if (sameProjectCandidate) {
+      return sameProjectCandidate;
+    }
+  }
+
+  return candidates[0] ?? null;
 }

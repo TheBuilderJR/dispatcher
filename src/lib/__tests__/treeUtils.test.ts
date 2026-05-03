@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { findProjectIdForNode, findProjectIdForTerminal } from "../treeUtils";
+import {
+  findDisconnectedTmuxWindowPlaceholder,
+  findProjectIdForNode,
+  findProjectIdForTerminal,
+} from "../treeUtils";
 
 describe("treeUtils", () => {
   it("finds a project by walking node ancestry", () => {
@@ -47,5 +51,77 @@ describe("treeUtils", () => {
     };
 
     expect(findProjectIdForTerminal(projects, ["projectA"], nodes, sessions, "term-1")).toBe("projectA");
+  });
+
+  it("finds disconnected tmux placeholders across projects so reattach can reuse them", () => {
+    const projects = {
+      projectA: { id: "projectA", name: "Project A", cwd: "/", rootGroupId: "root-a", expanded: true },
+      projectB: { id: "projectB", name: "Project B", cwd: "/", rootGroupId: "root-b", expanded: true },
+    };
+    const nodes = {
+      "root-a": { id: "root-a", type: "group" as const, name: "Root", children: ["node-a"], parentId: null },
+      "root-b": { id: "root-b", type: "group" as const, name: "Root", children: ["node-b"], parentId: null },
+      "node-a": {
+        id: "node-a",
+        type: "terminal" as const,
+        name: "Remote A",
+        terminalId: "term-a",
+        parentId: "root-a",
+      },
+      "node-b": {
+        id: "node-b",
+        type: "terminal" as const,
+        name: "Local Shell",
+        terminalId: "term-b",
+        parentId: "root-b",
+      },
+    };
+    const sessions = {
+      "term-a": {
+        id: "term-a",
+        title: "Remote A",
+        notes: "",
+        hasDetectedActivity: false,
+        lastUserInputAt: 0,
+        lastOutputAt: 0,
+        isNeedsAttention: false,
+        isPossiblyDone: false,
+        isLongInactive: false,
+        isRecentlyFocused: false,
+        backendKind: "tmux-window" as const,
+        tmuxWindowId: "@7",
+      },
+      "term-b": {
+        id: "term-b",
+        title: "Local Shell",
+        notes: "",
+        hasDetectedActivity: false,
+        lastUserInputAt: 0,
+        lastOutputAt: 0,
+        isNeedsAttention: false,
+        isPossiblyDone: false,
+        isLongInactive: false,
+        isRecentlyFocused: false,
+        backendKind: "local" as const,
+      },
+    };
+
+    expect(findDisconnectedTmuxWindowPlaceholder(
+      projects,
+      ["projectA", "projectB"],
+      nodes,
+      sessions,
+      "@7",
+      {
+        parentNodeId: "root-b",
+        projectId: "projectB",
+        title: "Remote A",
+      }
+    )).toMatchObject({
+      nodeId: "node-a",
+      terminalId: "term-a",
+      parentNodeId: "root-a",
+      projectId: "projectA",
+    });
   });
 });
