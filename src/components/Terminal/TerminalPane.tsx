@@ -13,6 +13,7 @@ import {
   getMacOptionMetaSequence,
   suppressMacCtrlChordTextInput,
 } from "../../lib/keyboardShortcuts";
+import { handleTmuxTerminalFocus } from "../../lib/tmuxControl";
 import {
   describeInputLikeEvent,
   describeKeyboardEvent,
@@ -256,7 +257,10 @@ export function TerminalPane({
       className={`terminal-pane ${isActive ? "terminal-pane-active" : ""}`}
       data-terminal-id={terminalId}
       ref={resizeRef}
-      onMouseDown={() => setActiveTerminal(terminalId)}
+      onMouseDown={() => {
+        setActiveTerminal(terminalId);
+        handleTmuxTerminalFocus(terminalId);
+      }}
       onContextMenu={handleContextMenu}
     >
       {searchOpen && (

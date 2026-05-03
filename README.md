@@ -1,15 +1,20 @@
 # Dispatcher
 
-A cross-platform desktop terminal multiplexer built with Tauri, React, and xterm.js. Organize your terminal sessions into projects and groups with a visual tree sidebar, split panes, and drag-and-drop reordering.
+A desktop terminal multiplexer built with Tauri, React, and xterm.js. Organize shells into projects, tabs, and split panes, keep notes next to live terminals, and bridge `tmux -CC` sessions into native Dispatcher tabs.
 
 <img width="2846" height="2046" alt="CleanShot 2026-03-01 at 20 33 45@2x" src="https://github.com/user-attachments/assets/6071950f-3529-426c-bbd5-27007033ca25" />
 
 ## Features
 
-- **Project-based organization** — Group terminals by project, each with its own working directory
-- **Hierarchical tree sidebar** — Nest terminals inside groups and projects; drag-and-drop to reorder
-- **Split panes** — Horizontal and vertical splits with resizable dividers
-- **Instant terminal creation** — PTY pool pre-spawns shells so new tabs open immediately
+- **Project-based organization** — group tabs by project with a tree sidebar and drag-and-drop reordering
+- **Split panes** — horizontal and vertical splits with resizable dividers
+- **Per-tab notes** — keep notes attached to the tab you are actually working in
+- **Activity status dots** — green for active work, pulsing green for unseen background output, brown for acknowledged idle tabs
+- **Fast local terminals** — PTY pooling keeps new local tabs feeling immediate
+- **tmux `-CC` integration** — run `tmux -CC` locally or over SSH and map tmux windows to Dispatcher tabs and tmux panes to Dispatcher splits
+- **tmux-aware shortcuts** — `Cmd+T`, split, close, focus, and rename route to tmux when the active tab is backed by a live control-mode session
+- **Restart-safe tmux placeholders** — if Dispatcher restarts, saved tmux tabs keep their titles and notes and come back with reconnect instructions instead of disappearing
+- **Built-in diagnostics** — tmux control-mode events are logged to `/tmp/dispatcher-debug.log` for debugging
 - **Cross-platform** — macOS (Apple Silicon + Intel), Linux, and Windows
 
 ## Install
@@ -61,28 +66,51 @@ Run the `.msi` installer or the setup `.exe`.
 
 ```bash
 npm install
-npm run tauri dev
+npm run tauri -- dev
 ```
 
 ### Production build
 
 ```bash
-npm run tauri build
+npm run tauri -- build
 ```
 
 Build artifacts are written to `src-tauri/target/release/bundle/`.
+
+## tmux `-CC`
+
+Dispatcher can promote a regular shell into a tmux control-mode session.
+
+```bash
+tmux -CC new-session -A -s dispatcher
+```
+
+You can do that locally or after `ssh`-ing into another machine. Once tmux enters control mode:
+
+- tmux windows become Dispatcher tabs
+- tmux panes become Dispatcher splits
+- `Cmd+T` creates a tmux window instead of a local tab
+- split and close actions target tmux instead of the local PTY layer
+
+If Dispatcher restarts while a tmux-backed workspace is open, those tabs come back as disconnected placeholders. Open a normal terminal with `Cmd+T`, re-ssh if needed, then run:
+
+```bash
+tmux -CC a
+```
+
+Dispatcher will reconnect and hydrate the saved tmux tabs in place.
 
 ## Releasing
 
 Releases are automated via GitHub Actions. To create a new release:
 
 ```bash
-# Bump version in src-tauri/tauri.conf.json, then:
-git tag v0.2.0
-git push origin v0.2.0
+# Bump the app version, commit, then:
+git tag vX.Y.Z
+git push origin main --tags
 ```
 
-This triggers the release workflow which builds for all platforms and creates a draft GitHub Release with the compiled assets. Review the draft and publish it when ready.
+This triggers the release workflow, builds the installers for all platforms, and publishes the GitHub Release with the compiled assets attached.
 
 ## Tech Stack
 

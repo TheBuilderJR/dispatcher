@@ -11,6 +11,7 @@ export interface TreeNode {
   type: "group" | "terminal";
   name: string;
   description?: string;
+  hidden?: boolean;
   children?: string[];
   terminalId?: string;
   parentId: string | null;

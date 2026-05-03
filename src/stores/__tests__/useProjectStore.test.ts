@@ -158,5 +158,23 @@ describe("useProjectStore", () => {
       );
       expect(result.projectOrder.length).toBeGreaterThan(0);
     });
+
+    it("preserves hidden nodes on rehydrate", () => {
+      const { merge } = (useProjectStore as any).persist.getOptions();
+      const result = merge(
+        {
+          projects: { a: { id: "a", name: "A", cwd: "/", rootGroupId: "root", expanded: true } },
+          nodes: {
+            root: { id: "root", type: "group", name: "Root", children: ["node"], parentId: null },
+            node: { id: "node", type: "terminal", name: "Shell", terminalId: "t1", parentId: "root", hidden: true },
+          },
+          activeProjectId: "a",
+          projectOrder: ["a"],
+        },
+        useProjectStore.getState()
+      );
+
+      expect(result.nodes.node.hidden).toBe(true);
+    });
   });
 });

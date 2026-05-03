@@ -9,6 +9,7 @@ import { HotkeyHelp } from "../common/HotkeyHelp";
 import { FontSettings } from "../common/FontSettings";
 import { SchemePicker } from "../common/SchemePicker";
 import { registerDragCallbacks } from "../../lib/dragState";
+import { handleTmuxTerminalFocus, resolvePreferredTerminalFocus } from "../../lib/tmuxControl";
 
 interface SidebarProps {
   onNewTerminal: () => void;
@@ -144,8 +145,10 @@ export function Sidebar({
             activeTerminalId={activeSidebarTerminalId}
             onSelect={() => setActiveProject(project.id)}
             onTerminalClick={(terminalId) => {
+              const preferredTerminalId = resolvePreferredTerminalFocus(terminalId);
               setActiveProject(project.id);
-              setActiveTerminal(terminalId);
+              setActiveTerminal(preferredTerminalId);
+              handleTmuxTerminalFocus(preferredTerminalId);
             }}
             onDeleteProject={() => onDeleteProject(project.id)}
             onDeleteTerminal={(terminalId) => onDeleteTerminal(terminalId, project.id)}

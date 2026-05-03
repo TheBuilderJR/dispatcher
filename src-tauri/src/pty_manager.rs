@@ -11,6 +11,58 @@ use tauri::{ipc::Channel, AppHandle, Emitter};
 
 const MAX_POOL_SIZE: usize = 3;
 
+fn preview_terminal_data(data: &str, limit: usize) -> String {
+    let mut preview = String::new();
+    let mut count = 0usize;
+
+    for ch in data.chars() {
+        if count >= limit {
+            preview.push('…');
+            break;
+        }
+
+        match ch {
+            '\n' => preview.push_str("\\n"),
+            '\r' => preview.push_str("\\r"),
+            '\t' => preview.push_str("\\t"),
+            '\u{1b}' => preview.push_str("\\x1b"),
+            c if c.is_control() => preview.push_str(&format!("\\x{:02x}", c as u32)),
+            c => preview.push(c),
+        }
+
+        count += 1;
+    }
+
+    preview
+}
+
+fn should_log_protocol_output(data: &str) -> bool {
+    data.contains("\u{1b}P1000p")
+        || data.contains("\u{1b}\\")
+        || data.contains("%begin ")
+        || data.contains("%end ")
+        || data.contains("%error ")
+        || data.contains("%exit")
+        || data.contains("%window-")
+        || data.contains("%layout-change ")
+        || data.contains("%session-window-changed ")
+        || data.contains("%sessions-changed")
+        || data.contains("%session-changed ")
+}
+
+fn log_protocol_output_chunk(terminal_id: &str, data: &str) {
+    if !should_log_protocol_output(data) {
+        return;
+    }
+
+    let _ = crate::debug_log::append_debug_log(&format!(
+        "[backend:pty_output] terminal_id={} bytes={} preview={}",
+        terminal_id,
+        data.len(),
+        preview_terminal_data(data, 200)
+    ));
+}
+
 fn shell_basename(shell: &str) -> &str {
     shell.rsplit('/').next().unwrap_or(shell)
 }
@@ -341,6 +393,7 @@ impl PtyManager {
                                 } => {
                                     let data =
                                         String::from_utf8_lossy(&carry[..split]).to_string();
+                                    log_protocol_output_chunk(terminal_id, &data);
                                     let _ = channel.send(TerminalOutput {
                                         terminal_id: terminal_id.clone(),
                                         data,
@@ -368,6 +421,7 @@ impl PtyManager {
                         terminal_id,
                     } => {
                         let data = String::from_utf8_lossy(&carry).to_string();
+                        log_protocol_output_chunk(terminal_id, &data);
                         let _ = channel.send(TerminalOutput {
                             terminal_id: terminal_id.clone(),
                             data,
@@ -543,6 +597,7 @@ impl PtyManager {
 
                         if split > 0 {
                             let data = String::from_utf8_lossy(&carry[..split]).to_string();
+                            log_protocol_output_chunk(&tid, &data);
                             let _ = channel.send(TerminalOutput {
                                 terminal_id: tid.clone(),
                                 data,
@@ -559,6 +614,7 @@ impl PtyManager {
             // Flush any remaining carry bytes at EOF.
             if !carry.is_empty() {
                 let data = String::from_utf8_lossy(&carry).to_string();
+                log_protocol_output_chunk(&tid, &data);
                 let _ = channel.send(TerminalOutput {
                     terminal_id: tid.clone(),
                     data,

@@ -23,6 +23,10 @@ export function SidebarTreeNode({
   onDeleteTerminal,
   depth,
 }: SidebarTreeNodeProps) {
+  if (node.hidden) {
+    return null;
+  }
+
   if (node.type === "terminal" && node.terminalId) {
     return (
       <div style={{ paddingLeft: `${depth * 12}px` }}>

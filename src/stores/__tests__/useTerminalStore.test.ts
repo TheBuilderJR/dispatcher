@@ -9,6 +9,7 @@ describe("useTerminalStore", () => {
       expect(session.notes).toBe("");
       expect(session.hasDetectedActivity).toBe(false);
       expect(session.lastUserInputAt).toBe(0);
+      expect(session.lastOutputAt).toBe(0);
       expect(session.isNeedsAttention).toBe(false);
       expect(session.isPossiblyDone).toBe(false);
       expect(session.isLongInactive).toBe(false);
@@ -103,6 +104,22 @@ describe("useTerminalStore", () => {
     });
   });
 
+  describe("markTerminalOutput", () => {
+    it("records output activity without clearing attention", () => {
+      useTerminalStore.getState().addSession("t1", "First");
+      useTerminalStore.getState().setNeedsAttention("t1", true);
+      useTerminalStore.getState().setPossiblyDone("t1", true);
+      useTerminalStore.getState().setLongInactive("t1", true);
+      useTerminalStore.getState().markTerminalOutput("t1");
+      const session = useTerminalStore.getState().sessions["t1"];
+      expect(session.hasDetectedActivity).toBe(true);
+      expect(session.lastOutputAt).toBeGreaterThan(0);
+      expect(session.isNeedsAttention).toBe(true);
+      expect(session.isPossiblyDone).toBe(false);
+      expect(session.isLongInactive).toBe(false);
+    });
+  });
+
   describe("setActiveTerminal", () => {
     it("acknowledges pulsing attention state as seen idle", () => {
       useTerminalStore.getState().addSession("t1", "First");
@@ -127,8 +144,8 @@ describe("useTerminalStore", () => {
       const { merge } = (useTerminalStore as any).persist.getOptions();
       const persisted = {
         sessions: {
-          t1: { id: "t1", title: "T1", notes: "hello", hasDetectedActivity: true, lastUserInputAt: 123, isNeedsAttention: true, isPossiblyDone: true, isLongInactive: true, isRecentlyFocused: true },
-          t2: { id: "t2", title: "T2", notes: "", hasDetectedActivity: true, lastUserInputAt: 456, isNeedsAttention: true, isPossiblyDone: true, isLongInactive: true, isRecentlyFocused: true },
+          t1: { id: "t1", title: "T1", notes: "hello", hasDetectedActivity: true, lastUserInputAt: 123, lastOutputAt: 321, isNeedsAttention: true, isPossiblyDone: true, isLongInactive: true, isRecentlyFocused: true },
+          t2: { id: "t2", title: "T2", notes: "", hasDetectedActivity: true, lastUserInputAt: 456, lastOutputAt: 654, isNeedsAttention: true, isPossiblyDone: true, isLongInactive: true, isRecentlyFocused: true },
         },
         activeTerminalId: "t1",
       };
@@ -139,6 +156,8 @@ describe("useTerminalStore", () => {
       expect(result.sessions["t2"].hasDetectedActivity).toBe(false);
       expect(result.sessions["t1"].lastUserInputAt).toBe(0);
       expect(result.sessions["t2"].lastUserInputAt).toBe(0);
+      expect(result.sessions["t1"].lastOutputAt).toBe(0);
+      expect(result.sessions["t2"].lastOutputAt).toBe(0);
       expect(result.sessions["t1"].isNeedsAttention).toBe(false);
       expect(result.sessions["t2"].isNeedsAttention).toBe(false);
       expect(result.sessions["t1"].isPossiblyDone).toBe(false);
@@ -147,6 +166,75 @@ describe("useTerminalStore", () => {
       expect(result.sessions["t2"].isLongInactive).toBe(false);
       expect(result.sessions["t1"].isRecentlyFocused).toBe(false);
       expect(result.sessions["t2"].isRecentlyFocused).toBe(false);
+    });
+
+    it("marks restored tmux sessions for startup normalization while clearing live tmux state", () => {
+      const { merge } = (useTerminalStore as any).persist.getOptions();
+      const persisted = {
+        sessions: {
+          transport: {
+            id: "transport",
+            title: "Shell",
+            notes: "",
+            hasDetectedActivity: false,
+            lastUserInputAt: 0,
+            lastOutputAt: 0,
+            isNeedsAttention: false,
+            isPossiblyDone: false,
+            isLongInactive: false,
+            isRecentlyFocused: false,
+            backendKind: "tmux-transport",
+            tmuxControlSessionId: "transport",
+          },
+          window: {
+            id: "window",
+            title: "tmux",
+            notes: "",
+            hasDetectedActivity: false,
+            lastUserInputAt: 0,
+            lastOutputAt: 0,
+            isNeedsAttention: false,
+            isPossiblyDone: false,
+            isLongInactive: false,
+            isRecentlyFocused: false,
+            backendKind: "tmux-window",
+            tmuxControlSessionId: "transport",
+            tmuxWindowId: "@1",
+          },
+          pane: {
+            id: "pane",
+            title: "tmux",
+            notes: "",
+            hasDetectedActivity: false,
+            lastUserInputAt: 0,
+            lastOutputAt: 0,
+            isNeedsAttention: false,
+            isPossiblyDone: false,
+            isLongInactive: false,
+            isRecentlyFocused: false,
+            backendKind: "tmux-pane",
+            tmuxControlSessionId: "transport",
+            tmuxWindowId: "@1",
+            tmuxPaneId: "%1",
+          },
+        },
+        activeTerminalId: "pane",
+      };
+
+      const result = merge(persisted, { sessions: {}, activeTerminalId: null });
+      expect(result.sessions.transport).toBeUndefined();
+      expect(result.sessions.window).toBeDefined();
+      expect(result.sessions.window.backendKind).toBe("tmux-window");
+      expect(result.sessions.window.restoredFromBackendKind).toBe("tmux-window");
+      expect(result.sessions.window.tmuxControlSessionId).toBeUndefined();
+      expect(result.sessions.window.tmuxWindowId).toBe("@1");
+      expect(result.sessions.pane).toBeDefined();
+      expect(result.sessions.pane.backendKind).toBe("tmux-pane");
+      expect(result.sessions.pane.restoredFromBackendKind).toBe("tmux-pane");
+      expect(result.sessions.pane.tmuxControlSessionId).toBeUndefined();
+      expect(result.sessions.pane.tmuxWindowId).toBe("@1");
+      expect(result.sessions.pane.tmuxPaneId).toBe("%1");
+      expect(result.activeTerminalId).toBe("pane");
     });
   });
 });

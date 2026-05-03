@@ -3,6 +3,7 @@ import { split, leaf } from "../../test/helpers";
 import {
   buildCompoundScreenshotHashInput,
   getTabRootTerminalIds,
+  getTabStatusTerminalIds,
   getTabTerminalIds,
 } from "../terminalScreenshotHash";
 
@@ -27,6 +28,16 @@ describe("terminalScreenshotHash", () => {
       "root",
       "solo",
     ]);
+  });
+
+  it("includes the tab root terminal when tracking status for virtual tmux tabs", () => {
+    const layouts = {
+      tmuxWindow: split(leaf("pane-a"), leaf("pane-b")),
+    };
+
+    expect(
+      getTabStatusTerminalIds(layouts, "tmuxWindow", new Set(["tmuxWindow", "pane-a", "pane-b"]))
+    ).toEqual(["tmuxWindow", "pane-a", "pane-b"]);
   });
 
   it("builds a compound hash input that preserves pane order and membership", () => {

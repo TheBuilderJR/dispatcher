@@ -3,6 +3,7 @@ import { StatusDot } from "../common/StatusDot";
 import { EditableText } from "../common/EditableText";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { useUiStore } from "../../stores/useUiStore";
+import { renameTmuxTerminal } from "../../lib/tmuxControl";
 
 interface TerminalHeaderProps {
   terminalId: string;
@@ -51,7 +52,17 @@ export function TerminalHeader({
           <StatusDot terminalId={terminalId} />
           <EditableText
             value={session.title}
-            onChange={(v) => updateTitle(terminalId, v)}
+            onChange={(v) => {
+              void renameTmuxTerminal(terminalId, v)
+                .then((handled) => {
+                  if (!handled) {
+                    updateTitle(terminalId, v);
+                  }
+                })
+                .catch(() => {
+                  updateTitle(terminalId, v);
+                });
+            }}
             className="terminal-title"
           />
           <button

@@ -5,6 +5,7 @@ import { useTerminalStore } from "../../stores/useTerminalStore";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { startDrag } from "../../lib/dragState";
 import { focusTerminalInstance } from "../../hooks/useTerminalBridge";
+import { renameTmuxTerminal } from "../../lib/tmuxControl";
 
 interface TerminalNodeProps {
   terminalId: string;
@@ -57,7 +58,15 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
     setEditing(false);
     const trimmed = draft.trim();
     if (trimmed && trimmed !== session.title) {
-      updateTitle(terminalId, trimmed);
+      void renameTmuxTerminal(terminalId, trimmed)
+        .then((handled) => {
+          if (!handled) {
+            updateTitle(terminalId, trimmed);
+          }
+        })
+        .catch(() => {
+          updateTitle(terminalId, trimmed);
+        });
     }
     const activeId = useTerminalStore.getState().activeTerminalId;
     if (activeId) {

@@ -14,11 +14,30 @@ import { findTerminalIds, findLayoutKeyForTerminal, findSiblingTerminalId } from
 import { closeTerminal, warmPool, refreshPool, getTerminalCwd, writeTerminal } from "./lib/tauriCommands";
 import { disposeTerminalInstance } from "./hooks/useTerminalBridge";
 import { useFileDrop } from "./hooks/useFileDrop";
+import { useStartupStoreNormalization } from "./hooks/useStartupStoreNormalization";
 import { useTerminalScreenshotMonitor } from "./hooks/useTerminalScreenshotMonitor";
+import {
+  closeTmuxTerminal,
+  createTmuxWindowForTerminal,
+  handleTmuxTerminalFocus,
+  isDisconnectedTmuxPlaceholderTerminal,
+  isLiveTmuxTerminal,
+  resolvePreferredTerminalFocus,
+  splitTmuxTerminal,
+} from "./lib/tmuxControl";
+import { collectVisibleTerminalRefs, findProjectIdForTerminal } from "./lib/treeUtils";
 import "./App.css";
 
 function generateId(): string {
   return crypto.randomUUID();
+}
+
+function isTmuxBackedTerminal(terminalId?: string): boolean {
+  if (!terminalId) {
+    return false;
+  }
+
+  return isLiveTmuxTerminal(terminalId);
 }
 
 type DialogMode =
@@ -38,6 +57,7 @@ export default function App() {
     return window.localStorage.getItem("dispatcher.keydebug.visible") === "1";
   });
   const projects = useProjectStore((s) => s.projects);
+  const projectOrder = useProjectStore((s) => s.projectOrder);
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const addProject = useProjectStore((s) => s.addProject);
   const removeProject = useProjectStore((s) => s.removeProject);
@@ -46,6 +66,7 @@ export default function App() {
   const addChildToNode = useProjectStore((s) => s.addChildToNode);
   const removeChildFromNode = useProjectStore((s) => s.removeChildFromNode);
   const nodes = useProjectStore((s) => s.nodes);
+  const sessions = useTerminalStore((s) => s.sessions);
   const addSession = useTerminalStore((s) => s.addSession);
   const updateSessionCwd = useTerminalStore((s) => s.updateCwd);
   const removeSession = useTerminalStore((s) => s.removeSession);
@@ -55,9 +76,28 @@ export default function App() {
   const removeLayout = useLayoutStore((s) => s.removeLayout);
 
   useFileDrop();
+  useStartupStoreNormalization();
   useTerminalScreenshotMonitor();
 
-  const activeProject = activeProjectId ? projects[activeProjectId] : null;
+  const resolvedActiveProjectId = (() => {
+    if (activeProjectId && projects[activeProjectId]) {
+      return activeProjectId;
+    }
+
+    for (const projectId of projectOrder) {
+      const project = projects[projectId];
+      if (!project) {
+        continue;
+      }
+      if (collectVisibleTerminalRefs(nodes, project.rootGroupId, sessions).length > 0) {
+        return projectId;
+      }
+    }
+
+    return projectOrder.find((projectId) => Boolean(projects[projectId])) ?? null;
+  })();
+
+  const activeProject = resolvedActiveProjectId ? projects[resolvedActiveProjectId] : null;
 
   const buildSidebarTerminalList = useCallback((): SidebarTerminalRef[] => {
     const { projects: allProjects, projectOrder, nodes: currentNodes } = useProjectStore.getState();
@@ -67,14 +107,9 @@ export default function App() {
     for (const projId of projectOrder) {
       const proj = allProjects[projId];
       if (!proj || !proj.expanded) continue;
-      const rootNode = currentNodes[proj.rootGroupId];
-      if (!rootNode?.children) continue;
-
-      for (const childId of rootNode.children) {
-        const child = currentNodes[childId];
-        if (child?.type === "terminal" && child.terminalId && sessions[child.terminalId]) {
-          allTerminals.push({ terminalId: child.terminalId, projectId: projId });
-        }
+      const refs = collectVisibleTerminalRefs(currentNodes, proj.rootGroupId, sessions);
+      for (const ref of refs) {
+        allTerminals.push({ terminalId: ref.terminalId, projectId: projId });
       }
     }
 
@@ -148,28 +183,26 @@ export default function App() {
 
       const { projects: allProjects, nodes: allNodes, projectOrder, activeProjectId: currentProjectId } = useProjectStore.getState();
       const allLayouts = useLayoutStore.getState().layouts;
+      const targetTerminalId = findLayoutKeyForTerminal(allLayouts, activeId) ?? activeId;
+      const projectId = findProjectIdForTerminal(
+        allProjects,
+        projectOrder,
+        allNodes,
+        state.sessions,
+        targetTerminalId
+      );
 
-      for (const projId of projectOrder) {
-        const proj = allProjects[projId];
-        if (!proj) continue;
-        const rootNode = allNodes[proj.rootGroupId];
-        if (!rootNode?.children) continue;
-
-        for (const childId of rootNode.children) {
-          const child = allNodes[childId];
-          if (child?.type === "terminal" && child.terminalId) {
-            // Match if the active terminal IS this tab root, or lives inside its split layout
-            if (child.terminalId === activeId || findLayoutKeyForTerminal(allLayouts, activeId) === child.terminalId) {
-              if (projId !== currentProjectId) {
-                useProjectStore.getState().setActiveProject(projId);
-              }
-              return;
-            }
-          }
-        }
+      if (projectId && projectId !== currentProjectId) {
+        useProjectStore.getState().setActiveProject(projectId);
       }
     });
   }, []);
+
+  useEffect(() => {
+    if (resolvedActiveProjectId && resolvedActiveProjectId !== activeProjectId) {
+      useProjectStore.getState().setActiveProject(resolvedActiveProjectId);
+    }
+  }, [resolvedActiveProjectId, activeProjectId]);
 
   const createProjectWithTerminal = useCallback(
     (projectName: string, terminalName: string) => {
@@ -221,13 +254,10 @@ export default function App() {
       }
 
       const allNodes = useProjectStore.getState().nodes;
-      const rootNode = allNodes[project.rootGroupId];
-      const fallbackSourceTerminalId = rootNode?.children
-        ? [...rootNode.children]
-            .reverse()
-            .map((childId) => allNodes[childId])
-            .find((child) => child?.type === "terminal" && child.terminalId)?.terminalId
-        : undefined;
+      const sessions = useTerminalStore.getState().sessions;
+      const fallbackSourceTerminalId = [...collectVisibleTerminalRefs(allNodes, project.rootGroupId, sessions)]
+        .reverse()
+        .map((ref) => ref.terminalId)[0];
       const cwdSourceTerminalId = sourceTerminalId ?? fallbackSourceTerminalId;
 
       let inheritedCwd = cwdSourceTerminalId
@@ -262,12 +292,32 @@ export default function App() {
   const handleNewTerminal = useCallback(() => {
     const currentProjectId = useProjectStore.getState().activeProjectId;
     const currentProject = currentProjectId ? useProjectStore.getState().projects[currentProjectId] : null;
-    if (currentProject) {
-      const activeTerminalId = useTerminalStore.getState().activeTerminalId ?? undefined;
-      createTerminalInProject(currentProject.id, "Shell", activeTerminalId);
-    } else {
-      setDialog({ type: "new-project-with-terminal" });
-    }
+    const activeTerminalId = useTerminalStore.getState().activeTerminalId ?? undefined;
+    const shouldStayInTmux = isTmuxBackedTerminal(activeTerminalId);
+    void createTmuxWindowForTerminal(activeTerminalId ?? "")
+      .then((handled) => {
+        if (handled) {
+          return;
+        }
+        if (shouldStayInTmux) {
+          return;
+        }
+        if (currentProject) {
+          createTerminalInProject(currentProject.id, "Shell", activeTerminalId);
+          return;
+        }
+        setDialog({ type: "new-project-with-terminal" });
+      })
+      .catch(() => {
+        if (shouldStayInTmux) {
+          return;
+        }
+        if (currentProject) {
+          createTerminalInProject(currentProject.id, "Shell", activeTerminalId);
+          return;
+        }
+        setDialog({ type: "new-project-with-terminal" });
+      });
   }, [createTerminalInProject]);
 
   const handleNewProject = useCallback(() => {
@@ -279,7 +329,18 @@ export default function App() {
       const activeProjectId = useProjectStore.getState().activeProjectId;
       const activeTerminalId = useTerminalStore.getState().activeTerminalId ?? undefined;
       const sourceTerminalId = activeProjectId === projectId ? activeTerminalId : undefined;
-      createTerminalInProject(projectId, "Shell", sourceTerminalId);
+      const shouldStayInTmux = isTmuxBackedTerminal(sourceTerminalId);
+      void createTmuxWindowForTerminal(sourceTerminalId ?? "")
+        .then((handled) => {
+          if (!handled && !shouldStayInTmux) {
+            createTerminalInProject(projectId, "Shell", sourceTerminalId);
+          }
+        })
+        .catch(() => {
+          if (!shouldStayInTmux) {
+            createTerminalInProject(projectId, "Shell", sourceTerminalId);
+          }
+        });
     },
     [createTerminalInProject]
   );
@@ -360,6 +421,11 @@ export default function App() {
 
   const handleDeleteTerminal = useCallback(
     (terminalId: string, projectId: string) => {
+      void closeTmuxTerminal(terminalId).then((handled) => {
+        if (handled) {
+          return;
+        }
+
       const project = projects[projectId];
       if (!project) return;
 
@@ -386,13 +452,21 @@ export default function App() {
         }
       }
       removeLayout(terminalId);
+      });
     },
     [projects, nodes, removeChildFromNode, removeNode, removeSession, removeLayout]
   );
 
   const handleSplitPane = useCallback(
     (targetTerminalId: string, direction: "horizontal" | "vertical") => {
-      if (!activeProject) return;
+      if (isDisconnectedTmuxPlaceholderTerminal(targetTerminalId)) {
+        return;
+      }
+
+      void splitTmuxTerminal(targetTerminalId, direction).then((handled) => {
+        if (handled) {
+          return;
+        }
 
       const allLayouts = useLayoutStore.getState().layouts;
       const layoutKey = findLayoutKeyForTerminal(allLayouts, targetTerminalId);
@@ -416,45 +490,66 @@ export default function App() {
           }
         })
         .catch(() => {});
+      });
     },
-    [activeProject, addSession, splitTerminal]
+    [addSession, splitTerminal]
   );
 
   const handleClosePane = useCallback(
     (terminalId: string) => {
-      if (!activeProject) return;
+      void closeTmuxTerminal(terminalId).then((handled) => {
+        if (handled) {
+          return;
+        }
 
+      const projectState = useProjectStore.getState();
+      const terminalState = useTerminalStore.getState();
       const allLayouts = useLayoutStore.getState().layouts;
       const layoutKey = findLayoutKeyForTerminal(allLayouts, terminalId);
       if (!layoutKey) return;
+      const owningProjectId = findProjectIdForTerminal(
+        projectState.projects,
+        projectState.projectOrder,
+        projectState.nodes,
+        terminalState.sessions,
+        layoutKey
+      );
+      const project = owningProjectId ? projectState.projects[owningProjectId] : null;
+      if (!project) return;
 
       const isTabRoot = layoutKey === terminalId;
       const layout = allLayouts[layoutKey];
       const isSolePane = !layout || layout.type === "terminal";
 
-      if (isTabRoot && isSolePane) {
-        const activeTermId = useTerminalStore.getState().activeTerminalId;
+      if (isSolePane) {
+        const activeTermId = terminalState.activeTerminalId;
+        const activeTabRootTerminalId = activeTermId
+          ? findLayoutKeyForTerminal(allLayouts, activeTermId) ?? activeTermId
+          : null;
         const nextSidebarTerminal =
-          activeTermId === terminalId ? findAdjacentSidebarTerminal(terminalId) : null;
+          activeTabRootTerminalId === layoutKey ? findAdjacentSidebarTerminal(layoutKey) : null;
         if (nextSidebarTerminal) {
+          const preferredTerminalId = resolvePreferredTerminalFocus(nextSidebarTerminal.terminalId);
           useProjectStore.getState().setActiveProject(nextSidebarTerminal.projectId);
-          useTerminalStore.getState().setActiveTerminal(nextSidebarTerminal.terminalId);
+          useTerminalStore.getState().setActiveTerminal(preferredTerminalId);
+          handleTmuxTerminalFocus(preferredTerminalId);
         }
 
-        // Closing the only pane in a tab: close the entire tab.
-        closeTerminal(terminalId).catch(() => {});
-        disposeTerminalInstance(terminalId);
-        removeSession(terminalId);
         removeLayout(layoutKey);
+        for (const id of new Set([layoutKey, ...findTerminalIds(layout ?? { type: "terminal", id: layoutKey, terminalId })])) {
+          closeTerminal(id).catch(() => {});
+          disposeTerminalInstance(id);
+          removeSession(id);
+        }
 
-        // Remove the tree node for this tab terminal
+        // Closing the only pane in a tab: remove the entire sidebar tab.
         const currentNodes = useProjectStore.getState().nodes;
-        const rootNode = currentNodes[activeProject.rootGroupId];
+        const rootNode = currentNodes[project.rootGroupId];
         if (rootNode?.children) {
           for (const childId of rootNode.children) {
             const child = currentNodes[childId];
-            if (child?.type === "terminal" && child.terminalId === terminalId) {
-              removeChildFromNode(activeProject.rootGroupId, childId);
+            if (child?.type === "terminal" && child.terminalId === layoutKey) {
+              removeChildFromNode(project.rootGroupId, childId);
               removeNode(childId);
               break;
             }
@@ -483,7 +578,7 @@ export default function App() {
             });
             // Update the tree node's terminalId to the new layout key
             const currentNodes = useProjectStore.getState().nodes;
-            const rootNode = currentNodes[activeProject.rootGroupId];
+            const rootNode = currentNodes[project.rootGroupId];
             if (rootNode?.children) {
               for (const childId of rootNode.children) {
                 const child = currentNodes[childId];
@@ -509,14 +604,14 @@ export default function App() {
 
       // If no more tabs remain, clean up the project
       const updatedNodes = useProjectStore.getState().nodes;
-      const updatedRoot = updatedNodes[activeProject.rootGroupId];
+      const updatedRoot = updatedNodes[project.rootGroupId];
       if (!updatedRoot?.children || updatedRoot.children.length === 0) {
-        removeNode(activeProject.rootGroupId);
-        removeProject(activeProject.id);
+        removeNode(project.rootGroupId);
+        removeProject(project.id);
       }
+      });
     },
     [
-      activeProject,
       findAdjacentSidebarTerminal,
       removeTerminalFromLayout,
       removeLayout,
@@ -531,9 +626,34 @@ export default function App() {
   const layouts = useLayoutStore((s) => s.layouts);
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
   const activeLayoutKey = (() => {
-    if (!activeProject || !activeTerminalId) return null;
-    return findLayoutKeyForTerminal(layouts, activeTerminalId);
+    if (!activeProject) return null;
+    if (activeTerminalId) {
+      const layoutKey = findLayoutKeyForTerminal(layouts, activeTerminalId);
+      if (layoutKey) {
+        return layoutKey;
+      }
+    }
+
+    const refs = collectVisibleTerminalRefs(nodes, activeProject.rootGroupId, sessions);
+    return refs[0]?.terminalId ?? null;
   })();
+
+  useEffect(() => {
+    if (!activeProject || activeLayoutKey) {
+      return;
+    }
+
+    const refs = collectVisibleTerminalRefs(nodes, activeProject.rootGroupId, sessions);
+    if (refs.length === 0) {
+      return;
+    }
+
+    const preferredTerminalId = resolvePreferredTerminalFocus(refs[0].terminalId);
+    if (preferredTerminalId !== useTerminalStore.getState().activeTerminalId) {
+      useTerminalStore.getState().setActiveTerminal(preferredTerminalId);
+      handleTmuxTerminalFocus(preferredTerminalId);
+    }
+  }, [activeProject, activeLayoutKey, nodes, sessions]);
 
   // Auto-create first project on launch
   useEffect(() => {
@@ -684,15 +804,12 @@ export default function App() {
       const nextProj = allProjects[nextProjId];
       if (nextProj) {
         const currentNodes = useProjectStore.getState().nodes;
-        const rootNode = currentNodes[nextProj.rootGroupId];
-        if (rootNode?.children?.length) {
-          for (const childId of rootNode.children) {
-            const child = currentNodes[childId];
-            if (child?.type === "terminal" && child.terminalId) {
-              useTerminalStore.getState().setActiveTerminal(child.terminalId);
-              break;
-            }
-          }
+        const sessions = useTerminalStore.getState().sessions;
+        const refs = collectVisibleTerminalRefs(currentNodes, nextProj.rootGroupId, sessions);
+        if (refs.length > 0) {
+          const preferredTerminalId = resolvePreferredTerminalFocus(refs[0].terminalId);
+          useTerminalStore.getState().setActiveTerminal(preferredTerminalId);
+          handleTmuxTerminalFocus(preferredTerminalId);
         }
       }
       return;
@@ -725,7 +842,9 @@ export default function App() {
       useProjectStore.getState().setActiveProject(next.projectId);
       // Restore the pane that was last focused in this tab, or fall back to the tab root.
       const restored = lastFocusedPane.current.get(next.terminalId);
-      useTerminalStore.getState().setActiveTerminal(restored || next.terminalId);
+      const preferredTerminalId = restored || resolvePreferredTerminalFocus(next.terminalId);
+      useTerminalStore.getState().setActiveTerminal(preferredTerminalId);
+      handleTmuxTerminalFocus(preferredTerminalId);
     }
   };
 

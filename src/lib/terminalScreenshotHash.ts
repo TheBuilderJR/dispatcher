@@ -18,6 +18,19 @@ export function getTabTerminalIds(
   return findTerminalIds(layout).filter((terminalId) => sessionIds.has(terminalId));
 }
 
+export function getTabStatusTerminalIds(
+  layouts: Record<string, LayoutNode>,
+  tabRootTerminalId: string | null,
+  sessionIds: Set<string>
+): string[] {
+  const terminalIds = getTabTerminalIds(layouts, tabRootTerminalId, sessionIds);
+  if (!tabRootTerminalId || terminalIds.includes(tabRootTerminalId) || !sessionIds.has(tabRootTerminalId)) {
+    return terminalIds;
+  }
+
+  return [tabRootTerminalId, ...terminalIds];
+}
+
 export function getTabRootTerminalIds(
   layouts: Record<string, LayoutNode>,
   sessionIds: Iterable<string>

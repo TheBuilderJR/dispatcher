@@ -1,9 +1,11 @@
-import { useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { useUiStore } from "../../stores/useUiStore";
 import { DetailPanel } from "../Terminal/DetailPanel";
 import { SplitContainer } from "./SplitContainer";
+import { useResizeObserver } from "../../hooks/useResizeObserver";
+import { isDisconnectedTmuxPlaceholderTerminal, syncTmuxWindowSize } from "../../lib/tmuxControl";
 
 const DETAIL_PANEL_WIDTH_KEY = "dispatcher.detailPanelWidth";
 const DEFAULT_DETAIL_PANEL_WIDTH = 260;
@@ -34,6 +36,9 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
   const [detailWidth, setDetailWidth] = useState(getInitialDetailPanelWidth);
   const detailCollapsed = useUiStore((s) => s.isDetailPanelCollapsed);
   const setDetailPanelCollapsed = useUiStore((s) => s.setDetailPanelCollapsed);
+  const terminalCanvasRef = useResizeObserver((entry) => {
+    syncTmuxWindowSize(layoutId, entry.contentRect.width, entry.contentRect.height);
+  });
 
   const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -71,6 +76,20 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
   // split panes are purely a layout concern and don't have their own metadata.
   // Split actions still target whichever pane is currently focused.
   const splitTarget = activeTerminalId ?? layoutId;
+  const isDisconnectedTmuxPlaceholder = isDisconnectedTmuxPlaceholderTerminal(layoutId);
+
+  useEffect(() => {
+    const element = terminalCanvasRef.current;
+    if (!element) {
+      return;
+    }
+
+    const frameId = requestAnimationFrame(() => {
+      syncTmuxWindowSize(layoutId, element.clientWidth, element.clientHeight);
+    });
+
+    return () => cancelAnimationFrame(frameId);
+  }, [layoutId, detailWidth, detailCollapsed, terminalCanvasRef]);
 
   return (
     <div className="project-view">
@@ -100,13 +119,28 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
           </svg>
         </button>
       )}
-      <div className="terminal-canvas">
-        <SplitContainer
-          node={layout}
-          layoutId={layoutId}
-          onSplit={onSplitPane}
-          onClose={onClosePane}
-        />
+      <div className="terminal-canvas" ref={terminalCanvasRef}>
+        {isDisconnectedTmuxPlaceholder ? (
+          <div className="tmux-placeholder-view">
+            <div className="tmux-placeholder-card">
+              <div className="tmux-placeholder-label">tmux -CC</div>
+              <h2 className="tmux-placeholder-title">Reconnect to hydrate this tab</h2>
+              <p className="tmux-placeholder-copy">
+                Press <kbd>Cmd</kbd>+<kbd>T</kbd> to open a normal terminal, re-ssh if needed, then run
+                <span className="tmux-placeholder-inline-command">tmux -CC a</span>.
+                Dispatcher will reconnect and hydrate this saved tmux tab.
+              </p>
+              <code className="tmux-placeholder-command">tmux -CC a</code>
+            </div>
+          </div>
+        ) : (
+          <SplitContainer
+            node={layout}
+            layoutId={layoutId}
+            onSplit={onSplitPane}
+            onClose={onClosePane}
+          />
+        )}
       </div>
     </div>
   );

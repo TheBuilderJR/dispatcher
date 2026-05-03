@@ -17,8 +17,12 @@ import type { TerminalOutputPayload } from "../lib/tauriCommands";
 import { useFontStore } from "../stores/useFontStore";
 import { useColorSchemeStore } from "../stores/useColorSchemeStore";
 import { buildFontFamilyCSS } from "../components/common/FontSettings";
+import { findLayoutKeyForTerminal } from "../lib/layoutUtils";
+import { getTabStatusTerminalIds } from "../lib/terminalScreenshotHash";
+import { useLayoutStore } from "../stores/useLayoutStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 import { describeKeyboardEvent, describeTerminalData, pushKeyDebug } from "../lib/keyDebug";
+import { routeTmuxTransportOutput, sendInputToTmuxTerminal } from "../lib/tmuxControl";
 
 // ---------------------------------------------------------------------------
 // Persistent terminal instances — survive React remounts caused by layout
@@ -124,11 +128,16 @@ function persistWebglEnabled(enabled: boolean) {
 
 function batchedWrite(terminalId: string, data: string) {
   let buffer = writeBuffers.get(terminalId);
+  const shouldRecordOutput = !buffer || buffer.length === 0;
   if (!buffer) {
     buffer = [];
     writeBuffers.set(terminalId, buffer);
   }
   buffer.push(data);
+
+  if (shouldRecordOutput && data.length > 0) {
+    useTerminalStore.getState().markTerminalOutput(terminalId);
+  }
 
   if (!writeRafs.has(terminalId)) {
     const rafId = requestAnimationFrame(() => {
@@ -141,6 +150,28 @@ function batchedWrite(terminalId: string, data: string) {
       }
     });
     writeRafs.set(terminalId, rafId);
+  }
+}
+
+export function queueTerminalOutput(terminalId: string, data: string) {
+  batchedWrite(terminalId, data);
+}
+
+export function reflectImmediateTabActivity(terminalId: string) {
+  const terminalStore = useTerminalStore.getState();
+  const layouts = useLayoutStore.getState().layouts;
+  const tabRootTerminalId = findLayoutKeyForTerminal(layouts, terminalId) ?? terminalId;
+  const statusTerminalIds = getTabStatusTerminalIds(
+    layouts,
+    tabRootTerminalId,
+    new Set(Object.keys(terminalStore.sessions))
+  );
+
+  for (const statusTerminalId of statusTerminalIds) {
+    terminalStore.setDetectedActivity(statusTerminalId, true);
+    terminalStore.setNeedsAttention(statusTerminalId, false);
+    terminalStore.setPossiblyDone(statusTerminalId, false);
+    terminalStore.setLongInactive(statusTerminalId, false);
   }
 }
 
@@ -414,15 +445,27 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
   return instance;
 }
 
+export function ensureTerminalFrontend(terminalId: string) {
+  createTerminalInstance(terminalId);
+}
+
 function ensureTerminalBackend(terminalId: string, cwd?: string) {
   const instance = createTerminalInstance(terminalId);
+  const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
+
+  if (backendKind === "tmux-pane" || backendKind === "tmux-window") {
+    return instance;
+  }
 
   if (!createdPtys.has(terminalId)) {
     createdPtys.add(terminalId);
 
     const channel = new Channel<TerminalOutputPayload>();
     channel.onmessage = (msg) => {
-      batchedWrite(msg.terminal_id, msg.data);
+      const nextData = routeTmuxTransportOutput(msg.terminal_id, msg.data);
+      if (nextData) {
+        batchedWrite(msg.terminal_id, nextData);
+      }
     };
 
     const cols = instance.xterm.cols || 80;
@@ -513,6 +556,36 @@ export function focusTerminalInstance(terminalId: string) {
   instances.get(terminalId)?.xterm.focus();
 }
 
+export function getTerminalCellSize(terminalId: string): { width: number; height: number } | null {
+  const instance = instances.get(terminalId);
+  if (!instance) {
+    return null;
+  }
+
+  const dimensions = (instance.xterm as Terminal & {
+    _core?: {
+      _renderService?: {
+        dimensions?: {
+          css: {
+            cell: {
+              width: number;
+              height: number;
+            };
+          };
+        };
+      };
+    };
+  })._core?._renderService?.dimensions;
+
+  const width = dimensions?.css.cell.width ?? 0;
+  const height = dimensions?.css.cell.height ?? 0;
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  return { width, height };
+}
+
 export function captureTerminalScreenshot(terminalId: string): string | null {
   const instance = instances.get(terminalId);
   if (!instance) {
@@ -531,6 +604,19 @@ export function sendSyntheticTerminalInput(terminalId: string, data: string) {
     data,
     expiresAt: Date.now() + SYNTHETIC_INPUT_SUPPRESSION_MS,
   });
+  reflectImmediateTabActivity(terminalId);
+
+  // Synthetic control/meta chords bypass xterm's native key handling, so
+  // mirror the default scroll-on-user-input behavior before writing to the PTY.
+  instances.get(terminalId)?.xterm.scrollToBottom();
+
+  const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
+  if (backendKind === "tmux-pane") {
+    sendInputToTmuxTerminal(terminalId, data).catch(() => {
+      syntheticInputSuppressions.delete(terminalId);
+    });
+    return;
+  }
 
   writeTerminal(terminalId, data).catch(() => {
     syntheticInputSuppressions.delete(terminalId);
@@ -693,7 +779,10 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
         i.xterm.focus();
       }
 
-      resizeTerminal(terminalId, i.xterm.cols, i.xterm.rows).catch(() => {});
+      const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
+      if (backendKind === "local" || backendKind === "tmux-transport") {
+        resizeTerminal(terminalId, i.xterm.cols, i.xterm.rows).catch(() => {});
+      }
     });
 
     // Forward user input to PTY.
@@ -713,14 +802,23 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       }
       if (!isTransientFocusSequence(data)) {
         useTerminalStore.getState().markTerminalActivity(terminalId);
+        reflectImmediateTabActivity(terminalId);
       }
       pushKeyDebug(`pty.write-request:${terminalId}`, describeTerminalData(data));
-      writeTerminal(terminalId, data).catch(() => {});
+      const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
+      if (backendKind === "tmux-pane") {
+        sendInputToTmuxTerminal(terminalId, data).catch(() => {});
+      } else {
+        writeTerminal(terminalId, data).catch(() => {});
+      }
     });
 
     // Handle resize
     const resizeDisposable = inst.xterm.onResize(({ cols, rows }) => {
-      resizeTerminal(terminalId, cols, rows).catch(() => {});
+      const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
+      if (backendKind === "local" || backendKind === "tmux-transport") {
+        resizeTerminal(terminalId, cols, rows).catch(() => {});
+      }
     });
 
     // Sync all font properties from store whenever they change

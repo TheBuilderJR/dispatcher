@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { writeTerminal } from "../lib/tauriCommands";
+import { sendInputToTmuxTerminal } from "../lib/tmuxControl";
 
 function shellEscape(path: string): string {
   return "'" + path.replace(/'/g, "'\\''") + "'";
@@ -37,7 +38,13 @@ export function useFileDrop() {
           const terminalId = pane.dataset.terminalId;
           if (terminalId && event.payload.paths.length > 0) {
             const escaped = event.payload.paths.map(shellEscape).join(" ");
-            writeTerminal(terminalId, escaped).catch(() => {});
+            sendInputToTmuxTerminal(terminalId, escaped)
+              .then((handled) => {
+                if (!handled) {
+                  writeTerminal(terminalId, escaped).catch(() => {});
+                }
+              })
+              .catch(() => {});
           }
         }
       }

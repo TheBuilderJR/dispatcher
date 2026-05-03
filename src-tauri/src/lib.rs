@@ -1,4 +1,5 @@
 mod commands;
+mod debug_log;
 mod errors;
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)]
@@ -11,7 +12,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_shell::init())
-        .setup(|_app| Ok(()))
+        .setup(|_app| {
+            let _ = debug_log::init_debug_log();
+            let _ = debug_log::append_debug_log("[backend] tauri setup complete");
+            Ok(())
+        })
         .manage(PtyManager::new())
         .invoke_handler(tauri::generate_handler![
             commands::create_terminal,
@@ -22,6 +27,8 @@ pub fn run() {
             commands::refresh_pool,
             commands::get_terminal_cwd,
             commands::get_terminal_debug_info,
+            commands::append_debug_log,
+            commands::get_debug_log_path,
             commands::show_font_panel,
             commands::hide_font_panel,
         ])

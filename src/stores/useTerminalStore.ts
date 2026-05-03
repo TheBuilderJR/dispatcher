@@ -6,9 +6,10 @@ interface TerminalStore {
   sessions: Record<string, TerminalSession>;
   activeTerminalId: string | null;
 
-  addSession: (id: string, title?: string, cwd?: string) => void;
+  addSession: (id: string, title?: string, cwd?: string, patch?: Partial<TerminalSession>) => void;
   removeSession: (id: string) => void;
   markTerminalActivity: (id: string) => void;
+  markTerminalOutput: (id: string) => void;
   setActiveTerminal: (id: string | null) => void;
   setDetectedActivity: (id: string, hasDetectedActivity: boolean) => void;
   setNeedsAttention: (id: string, isNeedsAttention: boolean) => void;
@@ -18,6 +19,7 @@ interface TerminalStore {
   updateTitle: (id: string, title: string) => void;
   updateNotes: (id: string, notes: string) => void;
   updateCwd: (id: string, cwd?: string) => void;
+  patchSession: (id: string, patch: Partial<TerminalSession>) => void;
 }
 
 let terminalCounter = 0;
@@ -38,7 +40,7 @@ export const useTerminalStore = create<TerminalStore>()(
       sessions: {},
       activeTerminalId: null,
 
-      addSession: (id, title, cwd) => {
+      addSession: (id, title, cwd, patch) => {
         terminalCounter++;
         set((state) => ({
           sessions: {
@@ -50,10 +52,13 @@ export const useTerminalStore = create<TerminalStore>()(
               cwd,
               hasDetectedActivity: false,
               lastUserInputAt: 0,
+              lastOutputAt: 0,
               isNeedsAttention: false,
               isPossiblyDone: false,
               isLongInactive: false,
               isRecentlyFocused: false,
+              backendKind: "local",
+              ...patch,
             },
           },
           activeTerminalId: id,
@@ -92,6 +97,28 @@ export const useTerminalStore = create<TerminalStore>()(
                 hasDetectedActivity: true,
                 lastUserInputAt: Date.now(),
                 isNeedsAttention: false,
+                isPossiblyDone: false,
+                isLongInactive: false,
+              },
+            },
+          };
+        });
+      },
+
+      markTerminalOutput: (id) => {
+        set((state) => {
+          const session = state.sessions[id];
+          if (!session) {
+            return state;
+          }
+
+          return {
+            sessions: {
+              ...state.sessions,
+              [id]: {
+                ...session,
+                hasDetectedActivity: true,
+                lastOutputAt: Date.now(),
                 isPossiblyDone: false,
                 isLongInactive: false,
               },
@@ -221,6 +248,18 @@ export const useTerminalStore = create<TerminalStore>()(
             sessions: { ...state.sessions, [id]: { ...session, cwd } },
           };
         }),
+
+      patchSession: (id, patch) =>
+        set((state) => {
+          const session = state.sessions[id];
+          if (!session) return state;
+          return {
+            sessions: {
+              ...state.sessions,
+              [id]: { ...session, ...patch },
+            },
+          };
+        }),
     }),
     {
       name: "dispatcher-terminals",
@@ -232,18 +271,44 @@ export const useTerminalStore = create<TerminalStore>()(
         const merged = { ...current, ...(persisted as Partial<TerminalStore>) };
         const updated: Record<string, TerminalSession> = {};
         for (const [id, session] of Object.entries(merged.sessions)) {
+          if (session.backendKind === "tmux-transport") {
+            continue;
+          }
+
+          const isRestoredTmuxWindow = session.backendKind === "tmux-window";
+          const isRestoredTmuxPane = session.backendKind === "tmux-pane";
           updated[id] = {
             ...session,
             notes: session.notes ?? "",
             hasDetectedActivity: false,
             lastUserInputAt: 0,
+            lastOutputAt: 0,
             isNeedsAttention: false,
             isPossiblyDone: false,
             isLongInactive: false,
             isRecentlyFocused: false,
+            backendKind:
+              isRestoredTmuxWindow || isRestoredTmuxPane
+                ? session.backendKind
+                : "local",
+            restoredFromBackendKind:
+              isRestoredTmuxWindow || isRestoredTmuxPane
+                ? session.backendKind
+                : undefined,
+            tmuxControlSessionId: undefined,
+            tmuxWindowId: isRestoredTmuxWindow || isRestoredTmuxPane ? session.tmuxWindowId : undefined,
+            tmuxPaneId: isRestoredTmuxPane ? session.tmuxPaneId : undefined,
           };
         }
-        return { ...merged, sessions: updated };
+
+        const updatedIds = Object.keys(updated);
+        const activeTerminalId = merged.activeTerminalId && updated[merged.activeTerminalId]
+          ? merged.activeTerminalId
+          : updatedIds.length > 0
+            ? updatedIds[updatedIds.length - 1]
+            : null;
+
+        return { ...merged, sessions: updated, activeTerminalId };
       },
     }
   )

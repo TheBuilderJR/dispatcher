@@ -20,9 +20,11 @@ interface ProjectStore {
 
   addNode: (node: TreeNode) => void;
   removeNode: (id: string) => void;
+  patchNode: (id: string, patch: Partial<TreeNode>) => void;
   updateNodeName: (id: string, name: string) => void;
   updateNodeDescription: (id: string, description: string) => void;
   addChildToNode: (parentId: string, childId: string) => void;
+  insertChildAt: (parentId: string, childId: string, index: number) => void;
   removeChildFromNode: (parentId: string, childId: string) => void;
   moveNode: (nodeId: string, newParentId: string) => void;
 }
@@ -157,6 +159,18 @@ export const useProjectStore = create<ProjectStore>()(
           return { nodes: rest };
         }),
 
+      patchNode: (id, patch) =>
+        set((state) => {
+          const node = state.nodes[id];
+          if (!node) return state;
+          return {
+            nodes: {
+              ...state.nodes,
+              [id]: { ...node, ...patch },
+            },
+          };
+        }),
+
       updateNodeName: (id, name) =>
         set((state) => {
           const node = state.nodes[id];
@@ -181,6 +195,21 @@ export const useProjectStore = create<ProjectStore>()(
             nodes: {
               ...state.nodes,
               [parentId]: { ...parent, children: [...children, childId] },
+            },
+          };
+        }),
+
+      insertChildAt: (parentId, childId, index) =>
+        set((state) => {
+          const parent = state.nodes[parentId];
+          if (!parent) return state;
+          const children = (parent.children ?? []).filter((existingId) => existingId !== childId);
+          const insertIndex = Math.max(0, Math.min(index, children.length));
+          children.splice(insertIndex, 0, childId);
+          return {
+            nodes: {
+              ...state.nodes,
+              [parentId]: { ...parent, children },
             },
           };
         }),
@@ -235,6 +264,14 @@ export const useProjectStore = create<ProjectStore>()(
         if (!merged.projectOrder || merged.projectOrder.length === 0) {
           merged.projectOrder = Object.keys(merged.projects);
         }
+        const restoredNodes: Record<string, TreeNode> = {};
+        for (const [nodeId, node] of Object.entries(merged.nodes)) {
+          restoredNodes[nodeId] = {
+            ...node,
+            hidden: node.hidden ?? false,
+          };
+        }
+        merged.nodes = restoredNodes;
         return merged;
       },
     }

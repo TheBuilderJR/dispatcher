@@ -75,3 +75,11 @@ export async function showFontPanel(
 export async function hideFontPanel(): Promise<void> {
   await invoke("hide_font_panel");
 }
+
+export async function appendDebugLog(message: string): Promise<void> {
+  await invoke("append_debug_log", { message });
+}
+
+export async function getDebugLogPath(): Promise<string> {
+  return await invoke("get_debug_log_path");
+}
