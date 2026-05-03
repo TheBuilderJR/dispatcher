@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildTmuxNewWindowCommand,
   buildTmuxPaneSnapshotCommand,
   buildTmuxWindowSnapshotCommand,
   encodeTmuxSendKeysHex,
@@ -62,5 +63,19 @@ describe("tmuxControlProtocol", () => {
     expect(buildTmuxPaneSnapshotCommand({ targetWindowId: "@24" })).toBe(
       'list-panes -t @24 -F "#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}"'
     );
+  });
+
+  it("builds new-window commands that preserve the current title", () => {
+    expect(buildTmuxNewWindowCommand({
+      targetWindowId: "@24",
+      title: "Feature A",
+      inheritCurrentPanePath: true,
+    })).toBe('new-window -a -t @24 -n "Feature A" -c "#{pane_current_path}"');
+
+    expect(buildTmuxNewWindowCommand({
+      targetWindowId: "@24",
+      title: "   ",
+      inheritCurrentPanePath: false,
+    })).toBe("new-window -a -t @24");
   });
 });

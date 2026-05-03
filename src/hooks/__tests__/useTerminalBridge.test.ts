@@ -5,12 +5,14 @@ const {
   writeTerminalMock,
   resizeTerminalMock,
   warmPoolMock,
+  appendDebugLogMock,
   createdTerminals,
 } = vi.hoisted(() => ({
   createTerminalMock: vi.fn(async () => {}),
   writeTerminalMock: vi.fn(async () => {}),
   resizeTerminalMock: vi.fn(async () => {}),
   warmPoolMock: vi.fn(async () => {}),
+  appendDebugLogMock: vi.fn(async () => {}),
   createdTerminals: [] as Array<{
     scrollToBottom: ReturnType<typeof vi.fn>;
     resize: ReturnType<typeof vi.fn>;
@@ -116,6 +118,7 @@ vi.mock("../../lib/tauriCommands", () => ({
   writeTerminal: writeTerminalMock,
   resizeTerminal: resizeTerminalMock,
   warmPool: warmPoolMock,
+  appendDebugLog: appendDebugLogMock,
 }));
 
 vi.mock("../../components/common/FontSettings", () => ({
@@ -139,6 +142,7 @@ describe("useTerminalBridge synthetic input", () => {
     writeTerminalMock.mockClear();
     resizeTerminalMock.mockClear();
     warmPoolMock.mockClear();
+    appendDebugLogMock.mockClear();
     document.body.innerHTML = "";
   });
 

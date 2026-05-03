@@ -20,6 +20,8 @@ import {
   describeTerminalData,
   pushKeyDebug,
 } from "../../lib/keyDebug";
+import { debugLog } from "../../lib/debugLog";
+import { shouldSyncTmuxFocusOnMouseDown } from "../../lib/terminalMouse";
 
 interface TerminalPaneProps {
   terminalId: string;
@@ -257,8 +259,18 @@ export function TerminalPane({
       className={`terminal-pane ${isActive ? "terminal-pane-active" : ""}`}
       data-terminal-id={terminalId}
       ref={resizeRef}
-      onMouseDown={() => {
+      onMouseDown={(event) => {
         setActiveTerminal(terminalId);
+        if (!shouldSyncTmuxFocusOnMouseDown(event.nativeEvent)) {
+          debugLog("tmux.focus", "skip sync for mouse gesture", {
+            terminalId,
+            button: event.button,
+            metaKey: event.metaKey,
+            ctrlKey: event.ctrlKey,
+          });
+          return;
+        }
+
         handleTmuxTerminalFocus(terminalId);
       }}
       onContextMenu={handleContextMenu}

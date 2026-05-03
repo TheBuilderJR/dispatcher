@@ -23,6 +23,7 @@ import { useLayoutStore } from "../stores/useLayoutStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 import { describeKeyboardEvent, describeTerminalData, pushKeyDebug } from "../lib/keyDebug";
 import { debugLog } from "../lib/debugLog";
+import { isLinkOpenModifierPressed } from "../lib/terminalMouse";
 import { routeTmuxTransportOutput, sendInputToTmuxTerminal } from "../lib/tmuxControl";
 
 // ---------------------------------------------------------------------------
@@ -49,10 +50,56 @@ interface FocusSequenceSuppression {
   expiresAt: number;
 }
 
-const instances = new Map<string, TerminalInstance>();
-const createdPtys = new Set<string>();
-const syntheticInputSuppressions = new Map<string, SyntheticInputSuppression>();
-const focusSequenceSuppressions = new Map<string, FocusSequenceSuppression>();
+interface TerminalBridgeRuntimeState {
+  instances: Map<string, TerminalInstance>;
+  createdPtys: Set<string>;
+  syntheticInputSuppressions: Map<string, SyntheticInputSuppression>;
+  focusSequenceSuppressions: Map<string, FocusSequenceSuppression>;
+  writeBuffers: Map<string, string[]>;
+  writeRafs: Map<string, number>;
+  webglFailures: Map<Terminal, number>;
+  webglProbeTimers: Map<Terminal, ReturnType<typeof setTimeout>>;
+}
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __dispatcherTerminalBridgeRuntimeState: TerminalBridgeRuntimeState | undefined;
+}
+
+function getTerminalBridgeRuntimeState(): TerminalBridgeRuntimeState {
+  if (globalThis.__dispatcherTerminalBridgeRuntimeState) {
+    debugLog("terminal.runtime", "reuse", {
+      instances: globalThis.__dispatcherTerminalBridgeRuntimeState.instances.size,
+      createdPtys: globalThis.__dispatcherTerminalBridgeRuntimeState.createdPtys.size,
+      writeBuffers: globalThis.__dispatcherTerminalBridgeRuntimeState.writeBuffers.size,
+    });
+    return globalThis.__dispatcherTerminalBridgeRuntimeState;
+  }
+
+  const created: TerminalBridgeRuntimeState = {
+    instances: new Map<string, TerminalInstance>(),
+    createdPtys: new Set<string>(),
+    syntheticInputSuppressions: new Map<string, SyntheticInputSuppression>(),
+    focusSequenceSuppressions: new Map<string, FocusSequenceSuppression>(),
+    writeBuffers: new Map<string, string[]>(),
+    writeRafs: new Map<string, number>(),
+    webglFailures: new Map<Terminal, number>(),
+    webglProbeTimers: new Map<Terminal, ReturnType<typeof setTimeout>>(),
+  };
+  globalThis.__dispatcherTerminalBridgeRuntimeState = created;
+  debugLog("terminal.runtime", "initialize", {
+    instances: 0,
+    createdPtys: 0,
+    writeBuffers: 0,
+  });
+  return created;
+}
+
+const terminalBridgeRuntime = getTerminalBridgeRuntimeState();
+const instances = terminalBridgeRuntime.instances;
+const createdPtys = terminalBridgeRuntime.createdPtys;
+const syntheticInputSuppressions = terminalBridgeRuntime.syntheticInputSuppressions;
+const focusSequenceSuppressions = terminalBridgeRuntime.focusSequenceSuppressions;
 const SYNTHETIC_INPUT_SUPPRESSION_MS = 50;
 const FOCUS_SEQUENCE_SUPPRESSION_MS = 150;
 const DEFAULT_SCROLLBACK = 1_000_000;
@@ -65,8 +112,8 @@ const PARKING_ROOT_ID = "dispatcher-terminal-parking-root";
 // renders once instead of on every 4096-byte IPC chunk.
 // ---------------------------------------------------------------------------
 
-const writeBuffers = new Map<string, string[]>();
-const writeRafs = new Map<string, number>();
+const writeBuffers = terminalBridgeRuntime.writeBuffers;
+const writeRafs = terminalBridgeRuntime.writeRafs;
 
 const WEBGL_OPT_IN_STORAGE_KEY = "dispatcher.webgl.enabled";
 
@@ -80,11 +127,6 @@ function readWebglEnabledPreference(): boolean {
 }
 
 let webglEnabled = readWebglEnabledPreference();
-
-function isLinkOpenModifierPressed(event: MouseEvent): boolean {
-  const isMac = navigator.platform.startsWith("Mac");
-  return isMac ? event.metaKey : event.ctrlKey;
-}
 
 function isOptionModifierPressed(event: MouseEvent): boolean {
   return event.altKey;
@@ -236,8 +278,8 @@ const MAX_WEBGL_FAILURES = 3;
 const WEBGL_PROBE_MS = 30_000;
 
 /** Per-terminal WebGL failure state. */
-const webglFailures = new Map<Terminal, number>();
-const webglProbeTimers = new Map<Terminal, ReturnType<typeof setTimeout>>();
+const webglFailures = terminalBridgeRuntime.webglFailures;
+const webglProbeTimers = terminalBridgeRuntime.webglProbeTimers;
 
 function loadWebGLAddon(xterm: Terminal) {
   if (!webglEnabled) return;
@@ -383,7 +425,23 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
   xterm.loadAddon(searchAddon);
 
   const webLinksAddon = new WebLinksAddon((event, uri) => {
-    if (!isLinkOpenModifierPressed(event)) {
+    const modifierPressed = isLinkOpenModifierPressed(event);
+    const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
+
+    debugLog("terminal.link", "activate", {
+      terminalId,
+      backendKind,
+      uri,
+      modifierPressed,
+      button: event.button,
+      metaKey: event.metaKey,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+      shiftKey: event.shiftKey,
+      defaultPrevented: event.defaultPrevented,
+    });
+
+    if (!modifierPressed) {
       return;
     }
 

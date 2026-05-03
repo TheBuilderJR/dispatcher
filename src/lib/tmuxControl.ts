@@ -8,6 +8,7 @@ import { buildLayoutFromTmuxPanes, type TmuxPaneLayoutRecord } from "./tmuxLayou
 import {
   TMUX_CONTROL_END,
   TMUX_CONTROL_START,
+  buildTmuxNewWindowCommand,
   buildTmuxPaneSnapshotCommand,
   buildTmuxWindowSnapshotCommand,
   encodeTmuxSendKeysHex,
@@ -19,6 +20,10 @@ import {
   type TmuxPaneSnapshot,
   type TmuxWindowSnapshot,
 } from "./tmuxControlProtocol";
+import {
+  buildPreferredTmuxWindowOrder,
+  mergeTmuxWindowNodesIntoChildren,
+} from "./tmuxWindowOrder";
 import { findLayoutKeyForTerminal, findTerminalIds } from "./layoutUtils";
 import {
   findDisconnectedTmuxWindowPlaceholder,
@@ -94,15 +99,57 @@ interface TmuxControlSession {
   needsBootstrapRefresh: boolean;
 }
 
+interface TmuxRuntimeState {
+  controlSessions: Map<string, TmuxControlSession>;
+  paneTerminalToSessionId: Map<string, string>;
+  windowTerminalToSessionId: Map<string, string>;
+  transportTerminalToSessionId: Map<string, string>;
+  transportRawCarry: Map<string, string>;
+}
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __dispatcherTmuxRuntimeState: TmuxRuntimeState | undefined;
+}
+
 function generateId(): string {
   return crypto.randomUUID();
 }
 
-const controlSessions = new Map<string, TmuxControlSession>();
-const paneTerminalToSessionId = new Map<string, string>();
-const windowTerminalToSessionId = new Map<string, string>();
-const transportTerminalToSessionId = new Map<string, string>();
-const transportRawCarry = new Map<string, string>();
+function getTmuxRuntimeState(): TmuxRuntimeState {
+  if (globalThis.__dispatcherTmuxRuntimeState) {
+    debugLog("tmux.runtime", "reuse", {
+      controlSessions: globalThis.__dispatcherTmuxRuntimeState.controlSessions.size,
+      paneBindings: globalThis.__dispatcherTmuxRuntimeState.paneTerminalToSessionId.size,
+      windowBindings: globalThis.__dispatcherTmuxRuntimeState.windowTerminalToSessionId.size,
+      transportBindings: globalThis.__dispatcherTmuxRuntimeState.transportTerminalToSessionId.size,
+    });
+    return globalThis.__dispatcherTmuxRuntimeState;
+  }
+
+  const created: TmuxRuntimeState = {
+    controlSessions: new Map<string, TmuxControlSession>(),
+    paneTerminalToSessionId: new Map<string, string>(),
+    windowTerminalToSessionId: new Map<string, string>(),
+    transportTerminalToSessionId: new Map<string, string>(),
+    transportRawCarry: new Map<string, string>(),
+  };
+  globalThis.__dispatcherTmuxRuntimeState = created;
+  debugLog("tmux.runtime", "initialize", {
+    controlSessions: 0,
+    paneBindings: 0,
+    windowBindings: 0,
+    transportBindings: 0,
+  });
+  return created;
+}
+
+const tmuxRuntime = getTmuxRuntimeState();
+const controlSessions = tmuxRuntime.controlSessions;
+const paneTerminalToSessionId = tmuxRuntime.paneTerminalToSessionId;
+const windowTerminalToSessionId = tmuxRuntime.windowTerminalToSessionId;
+const transportTerminalToSessionId = tmuxRuntime.transportTerminalToSessionId;
+const transportRawCarry = tmuxRuntime.transportRawCarry;
 const TMUX_OUTPUT_LOG_LIMIT = 25;
 
 function isGenericDispatcherTitle(title: string): boolean {
@@ -123,11 +170,160 @@ function getTerminalSession(terminalId: string): TerminalSession | undefined {
   return useTerminalStore.getState().sessions[terminalId];
 }
 
+function recoverControlSessionFromStore(sessionId: string): TmuxControlSession | null {
+  const existing = controlSessions.get(sessionId);
+  if (existing) {
+    return existing;
+  }
+
+  const terminalState = useTerminalStore.getState();
+  const transportSession = terminalState.sessions[sessionId];
+  if (!transportSession || transportSession.backendKind !== "tmux-transport") {
+    return null;
+  }
+
+  const projectState = useProjectStore.getState();
+  const transportNodeEntry = findNodeByTerminalId(projectState.nodes, sessionId);
+  const projectId = findProjectIdForTerminal(
+    projectState.projects,
+    projectState.projectOrder,
+    projectState.nodes,
+    terminalState.sessions,
+    sessionId
+  );
+
+  if (!transportNodeEntry || !transportNodeEntry.node.parentId || !projectId) {
+    debugLog("tmux.runtime", "recover failed", {
+      sessionId,
+      reason: "missing-transport-context",
+      hasTransportNode: Boolean(transportNodeEntry),
+      parentNodeId: transportNodeEntry?.node.parentId ?? null,
+      projectId: projectId ?? null,
+    });
+    return null;
+  }
+
+  const recovered: TmuxControlSession = {
+    id: sessionId,
+    transportTerminalId: sessionId,
+    projectId,
+    transportNodeId: transportNodeEntry.nodeId,
+    parentNodeId: transportNodeEntry.node.parentId,
+    transportTitle: transportSession.title,
+    transportNotes: transportSession.notes,
+    transportMetadataAdopted: true,
+    controlModeActive: true,
+    lineBuffer: "",
+    pendingCommands: [],
+    currentCommand: null,
+    windows: new Map(),
+    panes: new Map(),
+    windowOrder: [],
+    refreshTimer: null,
+    pendingWindowRefreshes: new Set(),
+    fullRefreshPending: false,
+    hydrationPromise: null,
+    windowSizes: new Map(),
+    outputLogCount: 0,
+    outputLogSuppressed: false,
+    needsBootstrapRefresh: false,
+  };
+
+  for (const [nodeId, node] of Object.entries(projectState.nodes)) {
+    if (node.type !== "terminal" || !node.terminalId) {
+      continue;
+    }
+
+    const session = terminalState.sessions[node.terminalId];
+    if (
+      !session
+      || session.backendKind !== "tmux-window"
+      || session.tmuxControlSessionId !== sessionId
+      || !session.tmuxWindowId
+    ) {
+      continue;
+    }
+
+    recovered.windows.set(session.tmuxWindowId, {
+      windowId: session.tmuxWindowId,
+      terminalId: session.id,
+      nodeId,
+      title: session.title,
+      flags: "",
+      activePaneId: null,
+    });
+    windowTerminalToSessionId.set(session.id, sessionId);
+  }
+
+  for (const session of Object.values(terminalState.sessions)) {
+    if (
+      session.backendKind !== "tmux-pane"
+      || session.tmuxControlSessionId !== sessionId
+      || !session.tmuxWindowId
+      || !session.tmuxPaneId
+    ) {
+      continue;
+    }
+
+    recovered.panes.set(session.tmuxPaneId, {
+      paneId: session.tmuxPaneId,
+      windowId: session.tmuxWindowId,
+      terminalId: session.id,
+      left: 0,
+      top: 0,
+      width: 0,
+      height: 0,
+      isActive: false,
+      cwd: session.cwd,
+    });
+    paneTerminalToSessionId.set(session.id, sessionId);
+
+    const window = recovered.windows.get(session.tmuxWindowId);
+    if (window && !window.activePaneId) {
+      window.activePaneId = session.tmuxPaneId;
+    }
+  }
+
+  if (recovered.windows.size === 0) {
+    debugLog("tmux.runtime", "recover failed", {
+      sessionId,
+      reason: "missing-window-bindings",
+      paneCount: recovered.panes.size,
+    });
+    return null;
+  }
+
+  const parentChildren = projectState.nodes[recovered.parentNodeId]?.children ?? [];
+  recovered.windowOrder = buildPreferredTmuxWindowOrder({
+    currentChildren: parentChildren,
+    windows: [...recovered.windows.values()].map((window) => ({
+      windowId: window.windowId,
+      nodeId: window.nodeId,
+    })),
+    snapshotWindowOrder: [...recovered.windows.keys()],
+  });
+
+  controlSessions.set(recovered.id, recovered);
+  transportTerminalToSessionId.set(recovered.transportTerminalId, recovered.id);
+  transportRawCarry.set(recovered.transportTerminalId, transportRawCarry.get(recovered.transportTerminalId) ?? "");
+
+  debugLog("tmux.runtime", "recover from store", {
+    sessionId,
+    transportTerminalId: recovered.transportTerminalId,
+    projectId,
+    windows: recovered.windows.size,
+    panes: recovered.panes.size,
+    windowOrder: recovered.windowOrder,
+  });
+
+  return recovered;
+}
+
 function getControlSessionById(sessionId: string | undefined): TmuxControlSession | null {
   if (!sessionId) {
     return null;
   }
-  return controlSessions.get(sessionId) ?? null;
+  return controlSessions.get(sessionId) ?? recoverControlSessionFromStore(sessionId);
 }
 
 function getControlSessionForTerminal(terminalId: string): TmuxControlSession | null {
@@ -283,23 +479,46 @@ function syncWindowNodeOrder(session: TmuxControlSession) {
     .map((windowId) => session.windows.get(windowId)?.nodeId)
     .filter((nodeId): nodeId is string => Boolean(nodeId));
 
-  const filteredChildren = parent.children.filter((childId) => !windowNodeIds.includes(childId));
-  const transportIndex = filteredChildren.indexOf(session.transportNodeId);
-  const insertIndex = transportIndex === -1 ? filteredChildren.length : transportIndex + 1;
-  filteredChildren.splice(insertIndex, 0, ...windowNodeIds);
+  const nextChildren = mergeTmuxWindowNodesIntoChildren({
+    currentChildren: parent.children,
+    transportNodeId: session.transportNodeId,
+    preferredWindowNodeOrder: windowNodeIds,
+  });
+
+  if (
+    nextChildren.length === parent.children.length
+    && nextChildren.every((childId, index) => childId === parent.children?.[index])
+  ) {
+    return;
+  }
 
   useProjectStore.setState((state) => ({
     nodes: {
       ...state.nodes,
       [session.parentNodeId]: {
         ...state.nodes[session.parentNodeId],
-        children: filteredChildren,
+        children: nextChildren,
       },
     },
   }));
 }
 
-function disposePaneTerminal(terminalId: string) {
+function disposePaneTerminal(
+  terminalId: string,
+  details?: {
+    sessionId?: string;
+    windowId?: string;
+    paneId?: string;
+    reason?: string;
+  }
+) {
+  debugLog("tmux.session", "dispose pane terminal", {
+    terminalId,
+    sessionId: details?.sessionId ?? null,
+    windowId: details?.windowId ?? null,
+    paneId: details?.paneId ?? null,
+    reason: details?.reason ?? null,
+  });
   disposeTerminalInstance(terminalId);
   useTerminalStore.getState().removeSession(terminalId);
   paneTerminalToSessionId.delete(terminalId);
@@ -311,6 +530,13 @@ function removeWindowProjection(session: TmuxControlSession, windowId: string) {
     return;
   }
 
+  debugLog("tmux.session", "remove window projection", {
+    sessionId: session.id,
+    windowId,
+    terminalId: window.terminalId,
+    nodeId: window.nodeId,
+  });
+
   const paneTerminalIds = [...session.panes.values()]
     .filter((pane) => pane.windowId === windowId)
     .map((pane) => pane.terminalId);
@@ -318,7 +544,12 @@ function removeWindowProjection(session: TmuxControlSession, windowId: string) {
   for (const pane of [...session.panes.values()]) {
     if (pane.windowId === windowId) {
       session.panes.delete(pane.paneId);
-      disposePaneTerminal(pane.terminalId);
+      disposePaneTerminal(pane.terminalId, {
+        sessionId: session.id,
+        windowId,
+        paneId: pane.paneId,
+        reason: "remove-window-projection",
+      });
     }
   }
 
@@ -527,6 +758,13 @@ function upsertWindowProjection(
       previousSession?.backendKind === "tmux-pane"
       && previousSession.tmuxWindowId === snapshot.windowId
     ) {
+      debugLog("tmux.session", "remove stale pane from layout", {
+        sessionId: session.id,
+        windowId: snapshot.windowId,
+        terminalId,
+        paneId: previousSession.tmuxPaneId ?? null,
+        title: snapshot.title,
+      });
       paneTerminalToSessionId.delete(terminalId);
       disposeTerminalInstance(terminalId);
       useTerminalStore.getState().removeSession(terminalId);
@@ -682,10 +920,19 @@ async function hydrateControlSession(session: TmuxControlSession) {
       }
     }
 
-    session.windowOrder = windowSnapshots.map((snapshot) => snapshot.windowId);
     for (const snapshot of windowSnapshots) {
       upsertWindowProjection(session, snapshot, panesByWindowId.get(snapshot.windowId) ?? []);
     }
+
+    const parentChildren = useProjectStore.getState().nodes[session.parentNodeId]?.children ?? [];
+    session.windowOrder = buildPreferredTmuxWindowOrder({
+      currentChildren: parentChildren,
+      windows: [...session.windows.values()].map((window) => ({
+        windowId: window.windowId,
+        nodeId: window.nodeId,
+      })),
+      snapshotWindowOrder: windowSnapshots.map((snapshot) => snapshot.windowId),
+    });
 
     syncWindowNodeOrder(session);
 
@@ -1161,8 +1408,9 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
 }
 
 export function routeTmuxTransportOutput(terminalId: string, data: string): string {
-  const existingSessionId = transportTerminalToSessionId.get(terminalId);
-  let session = existingSessionId ? controlSessions.get(existingSessionId) ?? null : null;
+  const existingSession = getControlSessionById(transportTerminalToSessionId.get(terminalId) ?? terminalId);
+  const existingSessionId = existingSession?.id ?? null;
+  let session = existingSession;
   const priorCarry = transportRawCarry.get(terminalId) ?? "";
   let remaining = priorCarry + data;
   let passthrough = "";
@@ -1185,6 +1433,12 @@ export function routeTmuxTransportOutput(terminalId: string, data: string): stri
     if (!session) {
       const startIndex = remaining.indexOf(TMUX_CONTROL_START);
       if (startIndex === -1) {
+        if (/^%(begin|end|error|output|layout-change|window-|session)/m.test(remaining)) {
+          debugLog("tmux.transport", "control-looking chunk without live session", {
+            terminalId,
+            preview: previewDebugText(remaining, 200),
+          });
+        }
         const carry = getMarkerCarry(remaining, TMUX_CONTROL_START);
         passthrough += remaining.slice(0, remaining.length - carry.length);
         transportRawCarry.set(terminalId, carry);
@@ -1282,10 +1536,19 @@ export async function sendInputToTmuxTerminal(terminalId: string, data: string):
   const pane = getTmuxPaneStateByTerminal(terminalId);
   const session = pane ? getControlSessionForTerminal(terminalId) : null;
   if (!pane || !session) {
+    const terminal = getTerminalSession(terminalId);
     debugLog("tmux.input", "missing pane/session", {
       terminalId,
+      backendKind: terminal?.backendKind ?? null,
+      tmuxControlSessionId: terminal?.tmuxControlSessionId ?? null,
+      tmuxWindowId: terminal?.tmuxWindowId ?? null,
+      tmuxPaneId: terminal?.tmuxPaneId ?? null,
       hasPane: Boolean(pane),
       hasSession: Boolean(session),
+      runtimeSessionCount: controlSessions.size,
+      runtimePaneBindingCount: paneTerminalToSessionId.size,
+      runtimeWindowBindingCount: windowTerminalToSessionId.size,
+      runtimeTransportBindingCount: transportTerminalToSessionId.size,
       preview: previewDebugText(data, 120),
     });
     return false;
@@ -1358,9 +1621,11 @@ export async function createTmuxWindowForTerminal(terminalId: string): Promise<b
     return false;
   }
 
-  const command = pane
-    ? `new-window -a -t ${window.windowId} -c "#{pane_current_path}"`
-    : `new-window -a -t ${window.windowId}`;
+  const command = buildTmuxNewWindowCommand({
+    targetWindowId: window.windowId,
+    title: window.title,
+    inheritCurrentPanePath: Boolean(pane),
+  });
   debugLog("tmux.action", "new window", {
     terminalId,
     sessionId: session.id,

@@ -43,6 +43,22 @@ export function buildTmuxPaneSnapshotCommand(options?: {
   return `list-panes -F ${TMUX_PANE_SNAPSHOT_FORMAT}`;
 }
 
+export function buildTmuxNewWindowCommand(options: {
+  targetWindowId: string;
+  title?: string;
+  inheritCurrentPanePath?: boolean;
+}): string {
+  const segments = ["new-window", "-a", "-t", options.targetWindowId];
+  const trimmedTitle = options.title?.trim();
+  if (trimmedTitle) {
+    segments.push("-n", quoteTmuxCommandArgument(trimmedTitle));
+  }
+  if (options.inheritCurrentPanePath) {
+    segments.push("-c", '"#{pane_current_path}"');
+  }
+  return segments.join(" ");
+}
+
 export function unescapeTmuxOutput(value: string): string {
   let result = "";
 
