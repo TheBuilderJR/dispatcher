@@ -189,6 +189,60 @@ describe("tmuxControl", () => {
     expect(terminalState.activeTerminalId).toBe(transportTerminalId);
   });
 
+  it("hydrates tmux control output when the DCS start marker is missing", async () => {
+    const transportTerminalId = "transport-bare-control";
+    seedTransportTerminal(transportTerminalId);
+
+    const passthrough = routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "tmux -CC\r",
+        "%begin 9 0",
+        "%end 9 0",
+        "%window-add @1",
+        "%sessions-changed",
+        "%session-changed $1 remote",
+        "",
+      ].join("\n")
+    );
+    expect(passthrough).toBe("tmux -CC\r\n");
+
+    await vi.runOnlyPendingTimersAsync();
+    await vi.runOnlyPendingTimersAsync();
+    expect(writeTerminalMock).toHaveBeenCalled();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 10 0",
+        "@1\thappy\t1\t*",
+        "%end 10 0",
+        "%begin 11 0",
+        "@1\t%1\t0\t0\t80\t24\t1\t/home/bobren\t2\t3\t0",
+        "%end 11 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const { windowTerminalId, paneTerminalId } = getHydratedTmuxIds();
+    expect(useTerminalStore.getState().sessions[windowTerminalId]).toMatchObject({
+      backendKind: "tmux-window",
+      tmuxControlSessionId: transportTerminalId,
+      tmuxWindowId: "@1",
+      title: "happy",
+    });
+    expect(useTerminalStore.getState().sessions[paneTerminalId]).toMatchObject({
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: transportTerminalId,
+      tmuxWindowId: "@1",
+      tmuxPaneId: "%1",
+      cwd: "/home/bobren",
+    });
+  });
+
   it("still removes the Dispatcher tab when tmux reports that the window closed", async () => {
     const transportTerminalId = "transport-close";
     seedTransportTerminal(transportTerminalId);

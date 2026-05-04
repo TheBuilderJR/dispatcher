@@ -108,6 +108,7 @@ interface TmuxControlSession {
   pendingWindowRefreshes: Set<string>;
   fullRefreshPending: boolean;
   hydrationPromise: Promise<void> | null;
+  bootstrapRefreshTimer: number | null;
   windowSizes: Map<string, string>;
   outputLogCount: number;
   outputLogSuppressed: boolean;
@@ -167,6 +168,24 @@ const windowTerminalToSessionId = tmuxRuntime.windowTerminalToSessionId;
 const transportTerminalToSessionId = tmuxRuntime.transportTerminalToSessionId;
 const transportRawCarry = tmuxRuntime.transportRawCarry;
 const TMUX_OUTPUT_LOG_LIMIT = 25;
+const TMUX_BOOTSTRAP_FALLBACK_DELAY_MS = 100;
+const TMUX_CONTROL_LINE_PREFIXES = [
+  "%begin",
+  "%client-",
+  "%end",
+  "%error",
+  "%exit",
+  "%extended-output",
+  "%layout-change",
+  "%output",
+  "%pane-",
+  "%session",
+  "%sessions-",
+  "%unlinked-window-",
+  "%window-",
+] as const;
+const TMUX_CONTROL_LINE_PATTERN =
+  /(?:^|[\r\n])(%(?:begin|client-|end|error|exit|extended-output|layout-change|output|pane-|session|sessions-|unlinked-window-|window-)(?:\s|$))/;
 
 function isGenericDispatcherTitle(title: string): boolean {
   return title === "Shell" || /^Terminal \d+$/.test(title);
@@ -180,6 +199,33 @@ function getMarkerCarry(input: string, marker: string): string {
     }
   }
   return "";
+}
+
+function findTmuxControlLineStart(input: string): number {
+  const match = TMUX_CONTROL_LINE_PATTERN.exec(input);
+  if (!match) {
+    return -1;
+  }
+
+  return match.index + match[0].indexOf("%");
+}
+
+function getBareTmuxControlCarry(input: string): string {
+  const lastLineBreakIndex = Math.max(input.lastIndexOf("\n"), input.lastIndexOf("\r"));
+  const suffix = input.slice(lastLineBreakIndex + 1);
+  if (!suffix.startsWith("%")) {
+    return "";
+  }
+
+  return TMUX_CONTROL_LINE_PREFIXES.some((prefix) => prefix.startsWith(suffix))
+    ? suffix
+    : "";
+}
+
+function getTransportControlStartCarry(input: string): string {
+  const dcsCarry = getMarkerCarry(input, TMUX_CONTROL_START);
+  const bareCarry = getBareTmuxControlCarry(input);
+  return bareCarry.length > dcsCarry.length ? bareCarry : dcsCarry;
 }
 
 function getTerminalSession(terminalId: string): TerminalSession | undefined {
@@ -244,6 +290,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     pendingWindowRefreshes: new Set(),
     fullRefreshPending: false,
     hydrationPromise: null,
+    bootstrapRefreshTimer: null,
     windowSizes: new Map(),
     outputLogCount: 0,
     outputLogSuppressed: false,
@@ -1438,6 +1485,10 @@ function flushBootstrapRefresh(session: TmuxControlSession) {
     return;
   }
 
+  if (session.bootstrapRefreshTimer !== null) {
+    window.clearTimeout(session.bootstrapRefreshTimer);
+    session.bootstrapRefreshTimer = null;
+  }
   session.needsBootstrapRefresh = false;
   debugLog("tmux.session", "bootstrap refresh scheduled", {
     sessionId: session.id,
@@ -1447,12 +1498,24 @@ function flushBootstrapRefresh(session: TmuxControlSession) {
 }
 
 function scheduleBootstrapRefresh(session: TmuxControlSession) {
-  window.setTimeout(() => {
+  if (session.bootstrapRefreshTimer !== null) {
+    return;
+  }
+
+  session.bootstrapRefreshTimer = window.setTimeout(() => {
+    session.bootstrapRefreshTimer = null;
     if (!controlSessions.has(session.id)) {
       return;
     }
+    if (
+      session.currentCommand !== null
+      || session.pendingCommands.length > 0
+    ) {
+      scheduleBootstrapRefresh(session);
+      return;
+    }
     flushBootstrapRefresh(session);
-  }, 0);
+  }, TMUX_BOOTSTRAP_FALLBACK_DELAY_MS);
 }
 
 function teardownControlSession(session: TmuxControlSession, reason: string) {
@@ -1467,6 +1530,10 @@ function teardownControlSession(session: TmuxControlSession, reason: string) {
   if (session.refreshTimer !== null) {
     window.clearTimeout(session.refreshTimer);
     session.refreshTimer = null;
+  }
+  if (session.bootstrapRefreshTimer !== null) {
+    window.clearTimeout(session.bootstrapRefreshTimer);
+    session.bootstrapRefreshTimer = null;
   }
 
   const activeTerminalId = useTerminalStore.getState().activeTerminalId;
@@ -1781,6 +1848,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     pendingWindowRefreshes: new Set(),
     fullRefreshPending: false,
     hydrationPromise: null,
+    bootstrapRefreshTimer: null,
     windowSizes: new Map(),
     outputLogCount: 0,
     outputLogSuppressed: false,
@@ -1814,8 +1882,13 @@ export function routeTmuxTransportOutput(terminalId: string, data: string): stri
   let remaining = priorCarry + data;
   let passthrough = "";
   transportRawCarry.set(terminalId, "");
+  const hasBareControlOutput = findTmuxControlLineStart(data) !== -1;
   const shouldLogTransportChunk = Boolean(
-    existingSessionId || priorCarry.length > 0 || data.includes(TMUX_CONTROL_START) || data.includes(TMUX_CONTROL_END)
+    existingSessionId
+    || priorCarry.length > 0
+    || data.includes(TMUX_CONTROL_START)
+    || data.includes(TMUX_CONTROL_END)
+    || hasBareControlOutput
   );
 
   if (shouldLogTransportChunk) {
@@ -1830,15 +1903,12 @@ export function routeTmuxTransportOutput(terminalId: string, data: string): stri
 
   while (remaining.length > 0) {
     if (!session) {
-      const startIndex = remaining.indexOf(TMUX_CONTROL_START);
-      if (startIndex === -1) {
-        if (/^%(begin|end|error|output|layout-change|window-|session)/m.test(remaining)) {
-          debugLog("tmux.transport", "control-looking chunk without live session", {
-            terminalId,
-            preview: previewDebugText(remaining, 200),
-          });
-        }
-        const carry = getMarkerCarry(remaining, TMUX_CONTROL_START);
+      const dcsStartIndex = remaining.indexOf(TMUX_CONTROL_START);
+      const bareStartIndex = findTmuxControlLineStart(remaining);
+      const hasDcsStart = dcsStartIndex !== -1;
+      const hasBareStart = bareStartIndex !== -1;
+      if (!hasDcsStart && !hasBareStart) {
+        const carry = getTransportControlStartCarry(remaining);
         passthrough += remaining.slice(0, remaining.length - carry.length);
         transportRawCarry.set(terminalId, carry);
         if (shouldLogTransportChunk && carry.length > 0) {
@@ -1851,23 +1921,33 @@ export function routeTmuxTransportOutput(terminalId: string, data: string): stri
         break;
       }
 
-      debugLog("tmux.transport", "start marker detected", {
+      const useBareStart = hasBareStart && (!hasDcsStart || bareStartIndex < dcsStartIndex);
+      const startIndex = useBareStart ? bareStartIndex : dcsStartIndex;
+      debugLog("tmux.transport", useBareStart ? "bare control stream detected" : "start marker detected", {
         terminalId,
         startIndex,
       });
       passthrough += remaining.slice(0, startIndex);
-      remaining = remaining.slice(startIndex + TMUX_CONTROL_START.length);
+      remaining = useBareStart
+        ? remaining.slice(startIndex)
+        : remaining.slice(startIndex + TMUX_CONTROL_START.length);
       session = createControlSession(terminalId);
-	      if (!session) {
-	        debugLog("tmux.transport", "start marker fallback to passthrough", {
-	          terminalId,
-	        });
-	        passthrough += TMUX_CONTROL_START;
-	        continue;
-	      }
-	      scheduleBootstrapRefresh(session);
-	      continue;
-	    }
+      if (!session) {
+        debugLog("tmux.transport", "control stream fallback to passthrough", {
+          terminalId,
+          bareControl: useBareStart,
+        });
+        if (useBareStart) {
+          passthrough += remaining;
+          remaining = "";
+          break;
+        }
+        passthrough += TMUX_CONTROL_START;
+        continue;
+      }
+      scheduleBootstrapRefresh(session);
+      continue;
+    }
 
     const endIndex = remaining.indexOf(TMUX_CONTROL_END);
     if (endIndex === -1) {
