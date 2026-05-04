@@ -431,6 +431,31 @@ function findDisconnectedWindowPlaceholder(
 ): DisconnectedTmuxWindowPlaceholderRef | null {
   const projectState = useProjectStore.getState();
   const terminalState = useTerminalStore.getState();
+  const allCandidates = Object.entries(terminalState.sessions)
+    .filter(([, s]) =>
+      s.backendKind === "tmux-window"
+      && !s.tmuxControlSessionId
+      && s.tmuxWindowId === windowId
+    )
+    .map(([id, s]) => {
+      const node = findNodeByTerminalId(projectState.nodes, id);
+      return {
+        terminalId: id,
+        title: s.title,
+        nodeId: node?.nodeId ?? null,
+        parentNodeId: node?.node.parentId ?? null,
+      };
+    });
+  if (allCandidates.length > 0) {
+    debugLog("tmux.session", "placeholder candidates", {
+      sessionId: session.id,
+      windowId,
+      title: title ?? null,
+      sessionParentNodeId: session.parentNodeId,
+      sessionProjectId: session.projectId,
+      candidates: allCandidates,
+    });
+  }
   const placeholder = findDisconnectedTmuxWindowPlaceholder(
     projectState.projects,
     projectState.projectOrder,
@@ -678,6 +703,28 @@ function upsertWindowProjection(
     ? findDisconnectedWindowPlaceholder(session, snapshot.windowId, snapshot.title)
     : null;
   if (!windowState) {
+    const allMatchingSessions = Object.entries(useTerminalStore.getState().sessions)
+      .filter(([, s]) => s.tmuxWindowId === snapshot.windowId)
+      .map(([id, s]) => ({
+        terminalId: id,
+        backendKind: s.backendKind,
+        tmuxControlSessionId: s.tmuxControlSessionId ?? null,
+        tmuxWindowId: s.tmuxWindowId ?? null,
+        title: s.title,
+      }));
+    debugLog("tmux.session", "upsert new window", {
+      sessionId: session.id,
+      windowId: snapshot.windowId,
+      title: snapshot.title,
+      parentNodeId: session.parentNodeId,
+      projectId: session.projectId,
+      placeholderFound: Boolean(disconnectedWindowPlaceholder),
+      placeholderTerminalId: disconnectedWindowPlaceholder?.terminalId ?? null,
+      placeholderNodeId: disconnectedWindowPlaceholder?.nodeId ?? null,
+      placeholderParentNodeId: disconnectedWindowPlaceholder?.parentNodeId ?? null,
+      existingSessionsWithSameWindowId: allMatchingSessions,
+      existingWindowCount: session.windows.size,
+    });
     if (!disconnectedWindowPlaceholder) {
       removeOrphanedTmuxWindowPlaceholders(session, snapshot.windowId);
     }
