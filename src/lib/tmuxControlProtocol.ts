@@ -49,9 +49,15 @@ export function buildTmuxPaneSnapshotCommand(options?: {
 export function buildTmuxPaneCaptureCommand(options: {
   paneId: string;
   alternateScreen?: boolean;
+  includeHistory?: boolean;
 }): string {
-  const flags = options.alternateScreen ? "-p -e -C -a -q" : "-p -e -C";
-  return `capture-pane ${flags} -t ${options.paneId}`;
+  const flags = ["-p", "-e", "-C"];
+  if (options.alternateScreen) {
+    flags.push("-a", "-q");
+  } else if (options.includeHistory !== false) {
+    flags.push("-S", "-");
+  }
+  return `capture-pane ${flags.join(" ")} -t ${options.paneId}`;
 }
 
 export function buildTmuxNewWindowCommand(options: {

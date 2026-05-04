@@ -1299,7 +1299,7 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
     const content = unescapeTmuxOutput(lines.join("\r\n"));
     queueTerminalOutput(
       pane.terminalId,
-      `\u001b[0m\u001b[H\u001b[2J${content}\u001b[0m\u001b[${cursorRow};${cursorCol}H`
+      `\u001b[0m\u001b[H\u001b[2J\u001b[3J${content}\u001b[0m\u001b[${cursorRow};${cursorCol}H`
     );
     debugLog("tmux.capture", "initial pane content complete", {
       sessionId: session.id,
