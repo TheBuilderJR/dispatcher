@@ -474,7 +474,7 @@ function findDisconnectedWindowPlaceholder(
     sessionParentNodeId: session.parentNodeId,
     placeholderParentNodeId: placeholder.parentNodeId,
   })) {
-    debugLog("tmux.session", "skip disconnected window placeholder", {
+    debugLog("tmux.session", "rehome disconnected window placeholder", {
       sessionId: session.id,
       windowId,
       title: title ?? null,
@@ -482,10 +482,8 @@ function findDisconnectedWindowPlaceholder(
       terminalId: placeholder.terminalId,
       placeholderParentNodeId: placeholder.parentNodeId,
       sessionParentNodeId: session.parentNodeId,
-      placeholderProjectId: placeholder.projectId,
-      sessionProjectId: session.projectId,
     });
-    return null;
+    useProjectStore.getState().moveNode(placeholder.nodeId, session.parentNodeId);
   }
 
   return placeholder;
