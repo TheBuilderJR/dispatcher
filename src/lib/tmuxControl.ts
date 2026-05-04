@@ -1717,7 +1717,6 @@ export async function createTmuxWindowForTerminal(terminalId: string): Promise<b
   const command = buildTmuxNewWindowCommand({
     targetWindowId: window.windowId,
     title: window.title,
-    inheritCurrentPanePath: Boolean(pane),
   });
   debugLog("tmux.action", "new window", {
     terminalId,
