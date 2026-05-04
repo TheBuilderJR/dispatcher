@@ -14,6 +14,7 @@ import {
   warmPool,
 } from "../lib/tauriCommands";
 import type { TerminalOutputPayload } from "../lib/tauriCommands";
+import type { TerminalBackendKind } from "../types/terminal";
 import { useFontStore } from "../stores/useFontStore";
 import { useColorSchemeStore } from "../stores/useColorSchemeStore";
 import { buildFontFamilyCSS } from "../components/common/FontSettings";
@@ -130,6 +131,10 @@ let webglEnabled = readWebglEnabledPreference();
 
 function isOptionModifierPressed(event: MouseEvent): boolean {
   return event.altKey;
+}
+
+function shouldFitFrontendToViewport(backendKind: TerminalBackendKind | undefined): boolean {
+  return backendKind !== "tmux-pane" && backendKind !== "tmux-window";
 }
 
 async function pasteClipboardIntoTerminal(terminalId: string, xterm: Terminal) {
@@ -476,7 +481,10 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
   };
   parkTerminalInstance(instance, PARKED_TERMINAL_WIDTH, PARKED_TERMINAL_HEIGHT);
   xterm.open(element);
-  fitAddon.fit();
+  const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind;
+  if (shouldFitFrontendToViewport(backendKind)) {
+    fitAddon.fit();
+  }
   loadWebGLAddon(xterm);
 
   xterm.attachCustomKeyEventHandler((e) => {
@@ -876,7 +884,10 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       const i = instances.get(terminalId);
       if (!i) return;
 
-      i.fitAddon.fit();
+      const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind;
+      if (shouldFitFrontendToViewport(backendKind)) {
+        i.fitAddon.fit();
+      }
       // Only steal DOM focus if this terminal is the active one.
       // Without this guard, every pane calls focus() on mount and
       // the last-rendered pane wins — breaking focus restoration.
@@ -884,7 +895,6 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
         i.xterm.focus();
       }
 
-      const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
       if (backendKind === "local" || backendKind === "tmux-transport") {
         resizeTerminal(terminalId, i.xterm.cols, i.xterm.rows).catch(() => {});
       }
@@ -938,7 +948,14 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
         i.xterm.options.letterSpacing = state.letterSpacing;
         cancelAnimationFrame(pendingFitRef.current);
         pendingFitRef.current = requestAnimationFrame(() => {
-          i.fitAddon.fit();
+          const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind;
+          if (shouldFitFrontendToViewport(backendKind)) {
+            i.fitAddon.fit();
+            return;
+          }
+          if (i.xterm.rows > 0) {
+            i.xterm.refresh(0, i.xterm.rows - 1);
+          }
         });
       }
     });
@@ -979,9 +996,13 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
   const fit = useCallback(() => {
     cancelAnimationFrame(pendingFitRef.current);
     pendingFitRef.current = requestAnimationFrame(() => {
+      const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind;
+      if (!shouldFitFrontendToViewport(backendKind)) {
+        return;
+      }
       fitAddonRef.current?.fit();
     });
-  }, []);
+  }, [terminalId]);
 
   return { containerRef, xtermRef, fitAddonRef, searchAddonRef, fit };
 }

@@ -7,6 +7,7 @@ const {
   warmPoolMock,
   appendDebugLogMock,
   createdTerminals,
+  createdFitAddons,
 } = vi.hoisted(() => ({
   createTerminalMock: vi.fn(async () => {}),
   writeTerminalMock: vi.fn(async () => {}),
@@ -18,6 +19,9 @@ const {
     resize: ReturnType<typeof vi.fn>;
     cols: number;
     rows: number;
+  }>,
+  createdFitAddons: [] as Array<{
+    fit: ReturnType<typeof vi.fn>;
   }>,
 }));
 
@@ -64,6 +68,10 @@ vi.mock("@xterm/xterm", () => {
 vi.mock("@xterm/addon-fit", () => {
   class FitAddonMock {
     fit = vi.fn();
+
+    constructor() {
+      createdFitAddons.push(this);
+    }
   }
 
   return {
@@ -138,6 +146,7 @@ import { useTerminalStore } from "../../stores/useTerminalStore";
 describe("useTerminalBridge synthetic input", () => {
   beforeEach(() => {
     createdTerminals.length = 0;
+    createdFitAddons.length = 0;
     createTerminalMock.mockClear();
     writeTerminalMock.mockClear();
     resizeTerminalMock.mockClear();
@@ -169,6 +178,23 @@ describe("useTerminalBridge synthetic input", () => {
     expect(createdTerminals[0].resize).toHaveBeenCalledWith(109, 25);
     expect(createdTerminals[0].cols).toBe(109);
     expect(createdTerminals[0].rows).toBe(25);
+  });
+
+  it("does not fit tmux pane frontends against the DOM viewport on creation", () => {
+    useTerminalStore.getState().addSession("tmux-pane-test", "A");
+    useTerminalStore.getState().patchSession("tmux-pane-test", {
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: "session-1",
+      tmuxWindowId: "@1",
+      tmuxPaneId: "%1",
+    });
+
+    ensureTerminalScreenshotTarget("tmux-pane-test");
+
+    expect(createdFitAddons).toHaveLength(1);
+    expect(createdFitAddons[0].fit).not.toHaveBeenCalled();
+
+    disposeTerminalInstance("tmux-pane-test");
   });
 
   it("clears brown tab status immediately for a tab-root session when a child pane gets input", () => {
