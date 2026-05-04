@@ -61,6 +61,11 @@ interface CommandCapture {
   lines: string[];
 }
 
+interface PendingNewWindowAnchor {
+  token: string;
+  anchorWindowId: string;
+}
+
 interface TmuxWindowState {
   windowId: string;
   terminalId: string;
@@ -109,6 +114,7 @@ interface TmuxControlSession {
   fullRefreshPending: boolean;
   hydrationPromise: Promise<void> | null;
   bootstrapRefreshTimer: number | null;
+  pendingNewWindowAnchors: PendingNewWindowAnchor[];
   windowSizes: Map<string, string>;
   outputLogCount: number;
   outputLogSuppressed: boolean;
@@ -291,6 +297,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     fullRefreshPending: false,
     hydrationPromise: null,
     bootstrapRefreshTimer: null,
+    pendingNewWindowAnchors: [],
     windowSizes: new Map(),
     outputLogCount: 0,
     outputLogSuppressed: false,
@@ -646,6 +653,18 @@ function adoptSessionPlacementFromWindow(session: TmuxControlSession, window: Tm
   return placement;
 }
 
+function insertWindowIdAfterAnchor(
+  windowOrder: readonly string[],
+  windowId: string,
+  anchorWindowId: string | null
+): string[] {
+  const order = windowOrder.filter((id) => id !== windowId);
+  const anchorIndex = anchorWindowId ? order.indexOf(anchorWindowId) : -1;
+  const insertIndex = anchorIndex === -1 ? order.length : anchorIndex + 1;
+  order.splice(insertIndex, 0, windowId);
+  return order;
+}
+
 function syncWindowNodeOrder(session: TmuxControlSession) {
   const projectState = useProjectStore.getState();
 
@@ -841,6 +860,7 @@ function detachControlSessionProjections(session: TmuxControlSession, reason: st
   session.windows.clear();
   session.panes.clear();
   session.windowOrder = [];
+  session.pendingNewWindowAnchors = [];
   session.pendingPaneOutput.clear();
 }
 
@@ -1632,7 +1652,12 @@ function handleNotification(session: TmuxControlSession, line: string) {
   if (line.startsWith("%window-add ")) {
     const windowId = line.slice("%window-add ".length).trim();
     if (windowId) {
-      session.windowOrder.push(windowId);
+      const anchor = session.pendingNewWindowAnchors.shift() ?? null;
+      session.windowOrder = insertWindowIdAfterAnchor(
+        session.windowOrder,
+        windowId,
+        anchor?.anchorWindowId ?? null
+      );
       scheduleRefresh(session, windowId);
     }
     return;
@@ -1849,6 +1874,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     fullRefreshPending: false,
     hydrationPromise: null,
     bootstrapRefreshTimer: null,
+    pendingNewWindowAnchors: [],
     windowSizes: new Map(),
     outputLogCount: 0,
     outputLogSuppressed: false,
@@ -2117,7 +2143,19 @@ export async function createTmuxWindowForTerminal(terminalId: string): Promise<b
     parentNodeId: placement.parentNodeId,
     command,
   });
-  await sendCommand(session, command);
+  const pendingAnchor: PendingNewWindowAnchor = {
+    token: generateId(),
+    anchorWindowId: window.windowId,
+  };
+  session.pendingNewWindowAnchors.push(pendingAnchor);
+  try {
+    await sendCommand(session, command);
+  } catch (error) {
+    session.pendingNewWindowAnchors = session.pendingNewWindowAnchors.filter(
+      (anchor) => anchor.token !== pendingAnchor.token
+    );
+    throw error;
+  }
   return true;
 }
 

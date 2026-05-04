@@ -34,6 +34,14 @@ describe("tmuxWindowOrder", () => {
     })).toEqual(["before", "transport", "node-a", "node-b", "after"]);
   });
 
+  it("inserts a fresh tmux window after its focused predecessor", () => {
+    expect(mergeTmuxWindowNodesIntoChildren({
+      currentChildren: ["transport", "node-a", "node-b", "local-shell"],
+      transportNodeId: "transport",
+      preferredWindowNodeOrder: ["node-a", "node-c", "node-b"],
+    })).toEqual(["transport", "node-a", "node-c", "node-b", "local-shell"]);
+  });
+
   it("removes stale cross-project references when a tmux window node was moved", () => {
     expect(reconcileTmuxWindowNodePlacements({
       currentChildrenByParentId: {

@@ -35,12 +35,21 @@ export function mergeTmuxWindowNodesIntoChildren(options: {
     return [...options.currentChildren];
   }
 
-  const existingWindowNodeIds = options.preferredWindowNodeOrder.filter((nodeId) => currentChildSet.has(nodeId));
   const result = [...options.currentChildren];
-  const anchorNodeId = existingWindowNodeIds[existingWindowNodeIds.length - 1] ?? options.transportNodeId;
-  const anchorIndex = result.indexOf(anchorNodeId);
-  const insertIndex = anchorIndex === -1 ? result.length : anchorIndex + 1;
-  result.splice(insertIndex, 0, ...missingWindowNodeIds);
+  let anchorNodeId = result.includes(options.transportNodeId)
+    ? options.transportNodeId
+    : null;
+  for (const nodeId of options.preferredWindowNodeOrder) {
+    if (result.includes(nodeId)) {
+      anchorNodeId = nodeId;
+      continue;
+    }
+
+    const anchorIndex = anchorNodeId ? result.indexOf(anchorNodeId) : -1;
+    const insertIndex = anchorIndex === -1 ? result.length : anchorIndex + 1;
+    result.splice(insertIndex, 0, nodeId);
+    anchorNodeId = nodeId;
+  }
   return result;
 }
 

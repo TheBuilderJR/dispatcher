@@ -28,7 +28,7 @@ import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { TMUX_CONTROL_START } from "../tmuxControlProtocol";
-import { routeTmuxTransportOutput } from "../tmuxControl";
+import { createTmuxWindowForTerminal, routeTmuxTransportOutput } from "../tmuxControl";
 
 function makeTerminalSession(
   id: string,
@@ -128,6 +128,29 @@ async function hydrateSingleWindow(transportTerminalId: string) {
   await Promise.resolve();
 }
 
+async function hydrateTwoWindows(transportTerminalId: string) {
+  routeTmuxTransportOutput(transportTerminalId, TMUX_CONTROL_START);
+  await vi.runOnlyPendingTimersAsync();
+  await vi.runOnlyPendingTimersAsync();
+
+  routeTmuxTransportOutput(
+    transportTerminalId,
+    [
+      "%begin 1 0",
+      "@1\tone\t1\t*",
+      "@2\ttwo\t0\t-",
+      "%end 1 0",
+      "%begin 2 0",
+      "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren/one\t4\t7\t0",
+      "@2\t%2\t0\t0\t80\t24\t1\t/Users/bobren/two\t1\t2\t0",
+      "%end 2 0",
+      "",
+    ].join("\n")
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 function getHydratedTmuxIds() {
   const sessions = useTerminalStore.getState().sessions;
   const windowEntry = Object.entries(sessions).find(([, session]) => session.backendKind === "tmux-window");
@@ -138,6 +161,30 @@ function getHydratedTmuxIds() {
     windowTerminalId: windowEntry![0],
     paneTerminalId: paneEntry![0],
   };
+}
+
+function getWindowTerminalIdByWindowId(windowId: string): string {
+  const entry = Object.entries(useTerminalStore.getState().sessions).find(
+    ([, session]) => session.backendKind === "tmux-window" && session.tmuxWindowId === windowId
+  );
+  expect(entry).toBeDefined();
+  return entry![0];
+}
+
+function getPaneTerminalIdByPaneId(paneId: string): string {
+  const entry = Object.entries(useTerminalStore.getState().sessions).find(
+    ([, session]) => session.backendKind === "tmux-pane" && session.tmuxPaneId === paneId
+  );
+  expect(entry).toBeDefined();
+  return entry![0];
+}
+
+function getNodeIdForTerminalId(terminalId: string): string {
+  const entry = Object.entries(useProjectStore.getState().nodes).find(
+    ([, node]) => node.type === "terminal" && node.terminalId === terminalId
+  );
+  expect(entry).toBeDefined();
+  return entry![0];
 }
 
 describe("tmuxControl", () => {
@@ -241,6 +288,76 @@ describe("tmuxControl", () => {
       tmuxPaneId: "%1",
       cwd: "/home/bobren",
     });
+  });
+
+  it("inserts Cmd+T tmux windows immediately after the focused tmux window", async () => {
+    const transportTerminalId = "transport-new-window-order";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateTwoWindows(transportTerminalId);
+    await Promise.resolve();
+    await Promise.resolve();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 20 0",
+        "%end 20 0",
+        "%begin 21 0",
+        "%end 21 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    writeTerminalMock.mockClear();
+
+    const firstWindowTerminalId = getWindowTerminalIdByWindowId("@1");
+    const secondWindowTerminalId = getWindowTerminalIdByWindowId("@2");
+    const firstPaneTerminalId = getPaneTerminalIdByPaneId("%1");
+    const firstNodeId = getNodeIdForTerminalId(firstWindowTerminalId);
+    const secondNodeId = getNodeIdForTerminalId(secondWindowTerminalId);
+    expect(useProjectStore.getState().nodes.root.children).toEqual([
+      "transport-node",
+      firstNodeId,
+      secondNodeId,
+    ]);
+
+    useTerminalStore.getState().setActiveTerminal(firstPaneTerminalId);
+    const createPromise = createTmuxWindowForTerminal(firstPaneTerminalId);
+    await Promise.resolve();
+    expect(writeTerminalMock).toHaveBeenLastCalledWith(
+      transportTerminalId,
+      "new-window -a -t @1\n"
+    );
+
+    routeTmuxTransportOutput(transportTerminalId, "%window-add @3\n");
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 3 0",
+        "%end 3 0",
+        "%begin 4 0",
+        "@3\tthree\t1\t*",
+        "%end 4 0",
+        "%begin 5 0",
+        "@3\t%3\t0\t0\t80\t24\t1\t/Users/bobren/three\t0\t0\t0",
+        "%end 5 0",
+        "",
+      ].join("\n")
+    );
+    await createPromise;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const thirdWindowTerminalId = getWindowTerminalIdByWindowId("@3");
+    const thirdNodeId = getNodeIdForTerminalId(thirdWindowTerminalId);
+    expect(useProjectStore.getState().nodes.root.children).toEqual([
+      "transport-node",
+      firstNodeId,
+      thirdNodeId,
+      secondNodeId,
+    ]);
   });
 
   it("still removes the Dispatcher tab when tmux reports that the window closed", async () => {
