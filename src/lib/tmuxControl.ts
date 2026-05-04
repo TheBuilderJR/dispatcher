@@ -29,6 +29,8 @@ import {
   findDisconnectedTmuxWindowPlaceholder,
   findNodeByTerminalId,
   findProjectIdForTerminal,
+  findProjectIdForNode,
+  type DisconnectedTmuxWindowPlaceholderRef,
 } from "./treeUtils";
 import { writeTerminal } from "./tauriCommands";
 import { debugLog, debugLogError, previewDebugText } from "./debugLog";
@@ -42,6 +44,11 @@ import {
   syncTerminalFrontendSize,
 } from "../hooks/useTerminalBridge";
 import { computeTmuxWindowSizeFromPaneViewport } from "./tmuxSizing";
+import {
+  canReuseTmuxWindowPlaceholder,
+  resolveRecoveredTmuxSessionPlacement,
+  resolveTmuxWindowPlacementFromPlaceholder,
+} from "./tmuxSessionPlacement";
 
 interface PendingCommand {
   command: string;
@@ -79,8 +86,10 @@ interface TmuxControlSession {
   id: string;
   transportTerminalId: string;
   projectId: string;
+  transportProjectId: string;
   transportNodeId: string;
   parentNodeId: string;
+  transportParentNodeId: string;
   transportTitle: string;
   transportNotes: string;
   transportMetadataAdopted: boolean;
@@ -205,12 +214,17 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     return null;
   }
 
+  let recoveredWindowProjectId: string | null = null;
+  let recoveredWindowParentNodeId: string | null = null;
+
   const recovered: TmuxControlSession = {
     id: sessionId,
     transportTerminalId: sessionId,
     projectId,
+    transportProjectId: projectId,
     transportNodeId: transportNodeEntry.nodeId,
     parentNodeId: transportNodeEntry.node.parentId,
+    transportParentNodeId: transportNodeEntry.node.parentId,
     transportTitle: transportSession.title,
     transportNotes: transportSession.notes,
     transportMetadataAdopted: true,
@@ -255,6 +269,18 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       activePaneId: null,
     });
     windowTerminalToSessionId.set(session.id, sessionId);
+
+    if (!recoveredWindowParentNodeId && node.parentId) {
+      recoveredWindowParentNodeId = node.parentId;
+    }
+    if (!recoveredWindowProjectId) {
+      recoveredWindowProjectId = findProjectIdForNode(
+        projectState.projects,
+        projectState.projectOrder,
+        projectState.nodes,
+        nodeId
+      );
+    }
   }
 
   for (const session of Object.values(terminalState.sessions)) {
@@ -295,6 +321,15 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     return null;
   }
 
+  const recoveredPlacement = resolveRecoveredTmuxSessionPlacement({
+    transportProjectId: projectId,
+    transportParentNodeId: transportNodeEntry.node.parentId,
+    windowProjectId: recoveredWindowProjectId,
+    windowParentNodeId: recoveredWindowParentNodeId,
+  });
+  recovered.projectId = recoveredPlacement.projectId;
+  recovered.parentNodeId = recoveredPlacement.parentNodeId;
+
   const parentChildren = projectState.nodes[recovered.parentNodeId]?.children ?? [];
   recovered.windowOrder = buildPreferredTmuxWindowOrder({
     currentChildren: parentChildren,
@@ -312,7 +347,10 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
   debugLog("tmux.runtime", "recover from store", {
     sessionId,
     transportTerminalId: recovered.transportTerminalId,
-    projectId,
+    transportProjectId: recovered.transportProjectId,
+    transportParentNodeId: recovered.transportParentNodeId,
+    projectId: recovered.projectId,
+    parentNodeId: recovered.parentNodeId,
     windows: recovered.windows.size,
     panes: recovered.panes.size,
     windowOrder: recovered.windowOrder,
@@ -388,7 +426,7 @@ function findDisconnectedWindowPlaceholder(
   session: TmuxControlSession,
   windowId: string,
   title?: string
-): { terminalId: string; nodeId: string } | null {
+): DisconnectedTmuxWindowPlaceholderRef | null {
   const projectState = useProjectStore.getState();
   const terminalState = useTerminalStore.getState();
   const placeholder = findDisconnectedTmuxWindowPlaceholder(
@@ -407,25 +445,48 @@ function findDisconnectedWindowPlaceholder(
     return null;
   }
 
-  if (placeholder.parentNodeId && placeholder.parentNodeId !== session.parentNodeId) {
-    debugLog("tmux.session", "rehome disconnected window placeholder", {
+  const nextPlacement = resolveTmuxWindowPlacementFromPlaceholder({
+    currentProjectId: session.projectId,
+    currentParentNodeId: session.parentNodeId,
+    existingWindowCount: session.windows.size,
+    placeholderProjectId: placeholder.projectId,
+    placeholderParentNodeId: placeholder.parentNodeId,
+  });
+  if (nextPlacement.adopted) {
+    debugLog("tmux.session", "adopt disconnected window placement", {
       sessionId: session.id,
       windowId,
       title: title ?? null,
       nodeId: placeholder.nodeId,
       terminalId: placeholder.terminalId,
-      fromParentNodeId: placeholder.parentNodeId,
-      toParentNodeId: session.parentNodeId,
-      fromProjectId: placeholder.projectId,
-      toProjectId: session.projectId,
+      fromTransportParentNodeId: session.transportParentNodeId,
+      fromTransportProjectId: session.transportProjectId,
+      toParentNodeId: nextPlacement.parentNodeId,
+      toProjectId: nextPlacement.projectId,
     });
-    useProjectStore.getState().moveNode(placeholder.nodeId, session.parentNodeId);
+    session.parentNodeId = nextPlacement.parentNodeId;
+    session.projectId = nextPlacement.projectId;
   }
 
-  return {
-    terminalId: placeholder.terminalId,
-    nodeId: placeholder.nodeId,
-  };
+  if (!canReuseTmuxWindowPlaceholder({
+    sessionParentNodeId: session.parentNodeId,
+    placeholderParentNodeId: placeholder.parentNodeId,
+  })) {
+    debugLog("tmux.session", "skip disconnected window placeholder", {
+      sessionId: session.id,
+      windowId,
+      title: title ?? null,
+      nodeId: placeholder.nodeId,
+      terminalId: placeholder.terminalId,
+      placeholderParentNodeId: placeholder.parentNodeId,
+      sessionParentNodeId: session.parentNodeId,
+      placeholderProjectId: placeholder.projectId,
+      sessionProjectId: session.projectId,
+    });
+    return null;
+  }
+
+  return placeholder;
 }
 
 function getDisconnectedPanePlaceholders(
@@ -945,6 +1006,13 @@ async function hydrateControlSession(session: TmuxControlSession) {
       : null;
     if (activeWindow && activePane) {
       setFocusedTmuxPane(session, activeWindow.windowId, activePane.paneId);
+
+      const activePaneState = session.panes.get(activePane.paneId);
+      if (activePaneState) {
+        useProjectStore.getState().setActiveProject(session.projectId);
+        useTerminalStore.getState().setActiveTerminal(activePaneState.terminalId);
+        focusTerminalInstance(activePaneState.terminalId);
+      }
     }
     if (activeWindow && !session.transportMetadataAdopted) {
       adoptTransportMetadataForWindow(session, activeWindow.windowId);
@@ -1369,8 +1437,10 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     id: transportTerminalId,
     transportTerminalId,
     projectId,
+    transportProjectId: projectId,
     transportNodeId: transportNodeEntry.nodeId,
     parentNodeId: transportNodeEntry.node.parentId,
+    transportParentNodeId: transportNodeEntry.node.parentId,
     transportTitle: transportSession?.title ?? "",
     transportNotes: transportSession?.notes ?? "",
     transportMetadataAdopted: false,
@@ -1788,9 +1858,13 @@ export function syncTmuxWindowSize(layoutId: string, widthPx: number, heightPx: 
     source: inferredWindowSize ? "pane-viewport" : "outer-canvas",
     size: nextSize,
   });
-  void sendCommand(session, `refresh-client -C ${windowState.windowId}:${nextSize}`).catch((error) => {
-    debugLogError("tmux.size", "refresh-client failed", error);
-  });
+  void sendCommand(session, `refresh-client -C ${nextSize}`)
+    .then(() => {
+      scheduleRefresh(session, windowState.windowId);
+    })
+    .catch((error) => {
+      debugLogError("tmux.size", "refresh-client failed", error);
+    });
 }
 
 export function isTmuxTransportTerminal(terminalId: string): boolean {
@@ -1826,4 +1900,37 @@ export function getTmuxLayoutKeyForTerminal(terminalId: string): string | null {
   }
   const layouts = useLayoutStore.getState().layouts;
   return findLayoutKeyForTerminal(layouts, terminalId);
+}
+
+export function resizeTmuxPaneByTerminal(
+  terminalId: string,
+  direction: "horizontal" | "vertical",
+  delta: number
+): boolean {
+  const pane = getTmuxPaneStateByTerminal(terminalId);
+  const session = pane ? getControlSessionForTerminal(terminalId) : null;
+  if (!pane || !session || delta === 0) {
+    return false;
+  }
+
+  const absDelta = Math.abs(delta);
+  let flag: string;
+  if (direction === "horizontal") {
+    flag = delta > 0 ? "-R" : "-L";
+  } else {
+    flag = delta > 0 ? "-D" : "-U";
+  }
+
+  debugLog("tmux.action", "resize pane", {
+    terminalId,
+    sessionId: session.id,
+    paneId: pane.paneId,
+    direction,
+    delta,
+    flag,
+  });
+  void sendCommand(session, `resize-pane -t ${pane.paneId} ${flag} ${absDelta}`).catch((error) => {
+    debugLogError("tmux.action", "resize-pane failed", error);
+  });
+  return true;
 }

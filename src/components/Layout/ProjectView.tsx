@@ -5,7 +5,13 @@ import { useUiStore } from "../../stores/useUiStore";
 import { DetailPanel } from "../Terminal/DetailPanel";
 import { SplitContainer } from "./SplitContainer";
 import { useResizeObserver } from "../../hooks/useResizeObserver";
-import { isDisconnectedTmuxPlaceholderTerminal, syncTmuxWindowSize } from "../../lib/tmuxControl";
+import {
+  isDisconnectedTmuxPlaceholderTerminal,
+  isTmuxWindowTerminal,
+  resizeTmuxPaneByTerminal,
+  syncTmuxWindowSize,
+} from "../../lib/tmuxControl";
+import { getTerminalCellSize } from "../../hooks/useTerminalBridge";
 
 const DETAIL_PANEL_WIDTH_KEY = "dispatcher.detailPanelWidth";
 const DEFAULT_DETAIL_PANEL_WIDTH = 260;
@@ -77,6 +83,23 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
   // Split actions still target whichever pane is currently focused.
   const splitTarget = activeTerminalId ?? layoutId;
   const isDisconnectedTmuxPlaceholder = isDisconnectedTmuxPlaceholderTerminal(layoutId);
+  const isTmuxLayout = isTmuxWindowTerminal(layoutId);
+
+  const handleTmuxPaneDragEnd = useCallback(
+    (terminalId: string, direction: "horizontal" | "vertical", ratio: number, oldRatio: number) => {
+      const cellSize = getTerminalCellSize(terminalId);
+      const element = terminalCanvasRef.current;
+      if (!cellSize || !element) return;
+
+      const containerPx = direction === "horizontal" ? element.clientWidth : element.clientHeight;
+      const cellPx = direction === "horizontal" ? cellSize.width : cellSize.height;
+      const deltaCells = Math.round(((ratio - oldRatio) * containerPx) / cellPx);
+      if (deltaCells !== 0) {
+        resizeTmuxPaneByTerminal(terminalId, direction, deltaCells);
+      }
+    },
+    [terminalCanvasRef]
+  );
 
   useEffect(() => {
     const element = terminalCanvasRef.current;
@@ -139,6 +162,7 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
             layoutId={layoutId}
             onSplit={onSplitPane}
             onClose={onClosePane}
+            onTmuxPaneDragEnd={isTmuxLayout ? handleTmuxPaneDragEnd : undefined}
           />
         )}
       </div>

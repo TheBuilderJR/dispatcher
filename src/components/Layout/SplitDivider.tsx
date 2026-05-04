@@ -3,9 +3,10 @@ import { useCallback, useRef } from "react";
 interface SplitDividerProps {
   direction: "horizontal" | "vertical";
   onResize: (ratio: number) => void;
+  onDragEnd?: (finalRatio: number) => void;
 }
 
-export function SplitDivider({ direction, onResize }: SplitDividerProps) {
+export function SplitDivider({ direction, onResize, onDragEnd }: SplitDividerProps) {
   const dividerRef = useRef<HTMLDivElement>(null);
 
   const handleMouseDown = useCallback(
@@ -18,6 +19,9 @@ export function SplitDivider({ direction, onResize }: SplitDividerProps) {
       if (!parent) return;
 
       const rect = parent.getBoundingClientRect();
+      let lastRatio = direction === "horizontal"
+        ? (e.clientX - rect.left) / rect.width
+        : (e.clientY - rect.top) / rect.height;
 
       const handleMouseMove = (e: MouseEvent) => {
         let ratio: number;
@@ -27,6 +31,7 @@ export function SplitDivider({ direction, onResize }: SplitDividerProps) {
           ratio = (e.clientY - rect.top) / rect.height;
         }
         ratio = Math.max(0.1, Math.min(0.9, ratio));
+        lastRatio = ratio;
         onResize(ratio);
       };
 
@@ -35,6 +40,7 @@ export function SplitDivider({ direction, onResize }: SplitDividerProps) {
         document.removeEventListener("mouseup", handleMouseUp);
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
+        onDragEnd?.(lastRatio);
       };
 
       document.addEventListener("mousemove", handleMouseMove);
@@ -43,7 +49,7 @@ export function SplitDivider({ direction, onResize }: SplitDividerProps) {
         direction === "horizontal" ? "col-resize" : "row-resize";
       document.body.style.userSelect = "none";
     },
-    [direction, onResize]
+    [direction, onResize, onDragEnd]
   );
 
   return (

@@ -3,11 +3,17 @@ import { useLayoutStore } from "../../stores/useLayoutStore";
 import { SplitDivider } from "./SplitDivider";
 import { TerminalPane } from "../Terminal/TerminalPane";
 
+function findFirstLeafTerminalId(node: LayoutNode): string | null {
+  if (node.type === "terminal") return node.terminalId;
+  return findFirstLeafTerminalId(node.first);
+}
+
 interface SplitContainerProps {
   node: LayoutNode;
   layoutId: string;
   onSplit?: (terminalId: string, direction: "horizontal" | "vertical") => void;
   onClose?: (terminalId: string) => void;
+  onTmuxPaneDragEnd?: (terminalId: string, direction: "horizontal" | "vertical", ratio: number, oldRatio: number) => void;
 }
 
 export function SplitContainer({
@@ -15,6 +21,7 @@ export function SplitContainer({
   layoutId,
   onSplit,
   onClose,
+  onTmuxPaneDragEnd,
 }: SplitContainerProps) {
   const setRatio = useLayoutStore((s) => s.setRatio);
 
@@ -32,6 +39,15 @@ export function SplitContainer({
 
   const { direction, ratio, first, second } = node;
   const isHorizontal = direction === "horizontal";
+
+  const handleDragEnd = onTmuxPaneDragEnd
+    ? (finalRatio: number) => {
+      const terminalId = findFirstLeafTerminalId(first);
+      if (terminalId) {
+        onTmuxPaneDragEnd(terminalId, direction, finalRatio, ratio);
+      }
+    }
+    : undefined;
 
   return (
     <div
@@ -53,11 +69,13 @@ export function SplitContainer({
           layoutId={layoutId}
           onSplit={onSplit}
           onClose={onClose}
+          onTmuxPaneDragEnd={onTmuxPaneDragEnd}
         />
       </div>
       <SplitDivider
         direction={direction}
         onResize={(r) => setRatio(layoutId, node.id, r)}
+        onDragEnd={handleDragEnd}
       />
       <div
         className="split-pane"
@@ -72,6 +90,7 @@ export function SplitContainer({
           layoutId={layoutId}
           onSplit={onSplit}
           onClose={onClose}
+          onTmuxPaneDragEnd={onTmuxPaneDragEnd}
         />
       </div>
     </div>
