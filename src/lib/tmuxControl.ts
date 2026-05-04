@@ -741,6 +741,62 @@ function removeWindowProjection(session: TmuxControlSession, windowId: string) {
   }
 }
 
+function rejectPendingCommands(session: TmuxControlSession, reason: string) {
+  const error = new Error(`tmux control session ended: ${reason}`);
+  const current = session.currentCommand;
+  session.currentCommand = null;
+  if (current?.pending) {
+    current.pending.reject(error);
+  }
+
+  const pendingCommands = session.pendingCommands;
+  session.pendingCommands = [];
+  for (const pending of pendingCommands) {
+    pending.reject(error);
+  }
+}
+
+function detachControlSessionProjections(session: TmuxControlSession, reason: string) {
+  debugLog("tmux.session", "detach projections", {
+    sessionId: session.id,
+    transportTerminalId: session.transportTerminalId,
+    reason,
+    windows: session.windows.size,
+    panes: session.panes.size,
+  });
+
+  for (const pane of session.panes.values()) {
+    paneTerminalToSessionId.delete(pane.terminalId);
+    useTerminalStore.getState().patchSession(pane.terminalId, {
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: undefined,
+      tmuxWindowId: pane.windowId,
+      tmuxPaneId: pane.paneId,
+      cwd: pane.cwd,
+    });
+  }
+
+  for (const window of session.windows.values()) {
+    windowTerminalToSessionId.delete(window.terminalId);
+    useTerminalStore.getState().patchSession(window.terminalId, {
+      title: window.title,
+      backendKind: "tmux-window",
+      tmuxControlSessionId: undefined,
+      tmuxWindowId: window.windowId,
+      tmuxPaneId: undefined,
+    });
+    useProjectStore.getState().patchNode(window.nodeId, {
+      name: window.title,
+      hidden: false,
+    });
+  }
+
+  session.windows.clear();
+  session.panes.clear();
+  session.windowOrder = [];
+  session.pendingPaneOutput.clear();
+}
+
 function removeOrphanedTmuxWindowPlaceholders(session: TmuxControlSession, windowId: string) {
   const terminalState = useTerminalStore.getState();
   const projectState = useProjectStore.getState();
@@ -1413,9 +1469,14 @@ function teardownControlSession(session: TmuxControlSession, reason: string) {
     session.refreshTimer = null;
   }
 
-  for (const windowId of [...session.windowOrder]) {
-    removeWindowProjection(session, windowId);
-  }
+  const activeTerminalId = useTerminalStore.getState().activeTerminalId;
+  const activeSession = activeTerminalId ? getTerminalSession(activeTerminalId) : null;
+  const activeBelongsToSession =
+    activeTerminalId === session.transportTerminalId
+    || activeSession?.tmuxControlSessionId === session.id;
+
+  rejectPendingCommands(session, reason);
+  detachControlSessionProjections(session, reason);
 
   useProjectStore.getState().patchNode(session.transportNodeId, { hidden: false });
   useTerminalStore.getState().patchSession(session.transportTerminalId, {
@@ -1425,9 +1486,7 @@ function teardownControlSession(session: TmuxControlSession, reason: string) {
     tmuxPaneId: undefined,
   });
 
-  const activeTerminalId = useTerminalStore.getState().activeTerminalId;
-  const activeSession = activeTerminalId ? getTerminalSession(activeTerminalId) : null;
-  if (activeTerminalId === session.transportTerminalId || activeSession?.tmuxControlSessionId === session.id) {
+  if (activeBelongsToSession) {
     useProjectStore.getState().setActiveProject(session.projectId);
     useTerminalStore.getState().setActiveTerminal(session.transportTerminalId);
     focusTerminalInstance(session.transportTerminalId);

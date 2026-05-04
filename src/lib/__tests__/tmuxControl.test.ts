@@ -1,0 +1,207 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const {
+  focusTerminalInstanceMock,
+  writeTerminalMock,
+} = vi.hoisted(() => ({
+  focusTerminalInstanceMock: vi.fn(),
+  writeTerminalMock: vi.fn(async () => {}),
+}));
+
+vi.mock("../tauriCommands", () => ({
+  appendDebugLog: vi.fn(async () => {}),
+  writeTerminal: writeTerminalMock,
+}));
+
+vi.mock("../../hooks/useTerminalBridge", () => ({
+  disposeTerminalInstance: vi.fn(),
+  ensureTerminalFrontend: vi.fn(),
+  focusTerminalInstance: focusTerminalInstanceMock,
+  getTerminalCellSize: vi.fn(() => ({ width: 8, height: 16 })),
+  getTerminalViewportSize: vi.fn(() => ({ width: 640, height: 384 })),
+  queueTerminalOutput: vi.fn(),
+  syncTerminalFrontendSize: vi.fn(),
+}));
+
+import type { TerminalSession } from "../../types/terminal";
+import { useLayoutStore } from "../../stores/useLayoutStore";
+import { useProjectStore } from "../../stores/useProjectStore";
+import { useTerminalStore } from "../../stores/useTerminalStore";
+import { TMUX_CONTROL_START } from "../tmuxControlProtocol";
+import { routeTmuxTransportOutput } from "../tmuxControl";
+
+function makeTerminalSession(
+  id: string,
+  patch: Partial<TerminalSession> = {}
+): TerminalSession {
+  return {
+    id,
+    title: "Shell",
+    notes: "",
+    cwd: undefined,
+    hasDetectedActivity: false,
+    lastUserInputAt: 0,
+    lastOutputAt: 0,
+    isNeedsAttention: false,
+    isPossiblyDone: false,
+    isLongInactive: false,
+    isRecentlyFocused: false,
+    backendKind: "local",
+    ...patch,
+  };
+}
+
+function resetTmuxRuntime() {
+  const runtime = globalThis.__dispatcherTmuxRuntimeState;
+  runtime?.controlSessions.clear();
+  runtime?.paneTerminalToSessionId.clear();
+  runtime?.windowTerminalToSessionId.clear();
+  runtime?.transportTerminalToSessionId.clear();
+  runtime?.transportRawCarry.clear();
+}
+
+function seedTransportTerminal(transportTerminalId: string) {
+  useProjectStore.setState({
+    projects: {
+      project: {
+        id: "project",
+        name: "Project",
+        cwd: "/tmp",
+        rootGroupId: "root",
+        expanded: true,
+      },
+    },
+    projectOrder: ["project"],
+    activeProjectId: "project",
+    nodes: {
+      root: {
+        id: "root",
+        type: "group",
+        name: "Project",
+        parentId: null,
+        children: ["transport-node"],
+      },
+      "transport-node": {
+        id: "transport-node",
+        type: "terminal",
+        name: "Shell",
+        terminalId: transportTerminalId,
+        parentId: "root",
+      },
+    },
+  });
+  useTerminalStore.setState({
+    sessions: {
+      [transportTerminalId]: makeTerminalSession(transportTerminalId),
+    },
+    activeTerminalId: transportTerminalId,
+  });
+  useLayoutStore.setState({
+    layouts: {
+      [transportTerminalId]: {
+        type: "terminal",
+        id: "layout-transport",
+        terminalId: transportTerminalId,
+      },
+    },
+  });
+}
+
+async function hydrateSingleWindow(transportTerminalId: string) {
+  routeTmuxTransportOutput(transportTerminalId, TMUX_CONTROL_START);
+  await vi.runOnlyPendingTimersAsync();
+  await vi.runOnlyPendingTimersAsync();
+
+  routeTmuxTransportOutput(
+    transportTerminalId,
+    [
+      "%begin 1 0",
+      "@1\thappy\t1\t*",
+      "%end 1 0",
+      "%begin 2 0",
+      "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren\t4\t7\t0",
+      "%end 2 0",
+      "",
+    ].join("\n")
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function getHydratedTmuxIds() {
+  const sessions = useTerminalStore.getState().sessions;
+  const windowEntry = Object.entries(sessions).find(([, session]) => session.backendKind === "tmux-window");
+  const paneEntry = Object.entries(sessions).find(([, session]) => session.backendKind === "tmux-pane");
+  expect(windowEntry).toBeDefined();
+  expect(paneEntry).toBeDefined();
+  return {
+    windowTerminalId: windowEntry![0],
+    paneTerminalId: paneEntry![0],
+  };
+}
+
+describe("tmuxControl", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    writeTerminalMock.mockClear();
+    focusTerminalInstanceMock.mockClear();
+    resetTmuxRuntime();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetTmuxRuntime();
+  });
+
+  it("keeps hydrated tmux windows as disconnected placeholders when control mode exits", async () => {
+    const transportTerminalId = "transport-detach";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId, paneTerminalId } = getHydratedTmuxIds();
+    useTerminalStore.getState().setActiveTerminal(paneTerminalId);
+
+    routeTmuxTransportOutput(transportTerminalId, "%exit\n");
+
+    const terminalState = useTerminalStore.getState();
+    const projectState = useProjectStore.getState();
+    expect(terminalState.sessions[windowTerminalId]).toMatchObject({
+      backendKind: "tmux-window",
+      tmuxControlSessionId: undefined,
+      tmuxWindowId: "@1",
+      tmuxPaneId: undefined,
+      title: "happy",
+    });
+    expect(terminalState.sessions[paneTerminalId]).toMatchObject({
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: undefined,
+      tmuxWindowId: "@1",
+      tmuxPaneId: "%1",
+      cwd: "/Users/bobren",
+    });
+    expect(useLayoutStore.getState().layouts[windowTerminalId]).toBeDefined();
+    expect(Object.values(projectState.nodes).some((node) => node.terminalId === windowTerminalId)).toBe(true);
+    expect(projectState.nodes["transport-node"].hidden).toBe(false);
+    expect(terminalState.sessions[transportTerminalId]).toMatchObject({
+      backendKind: "local",
+      tmuxControlSessionId: undefined,
+    });
+    expect(terminalState.activeTerminalId).toBe(transportTerminalId);
+  });
+
+  it("still removes the Dispatcher tab when tmux reports that the window closed", async () => {
+    const transportTerminalId = "transport-close";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId, paneTerminalId } = getHydratedTmuxIds();
+
+    routeTmuxTransportOutput(transportTerminalId, "%window-close @1\n");
+
+    const terminalState = useTerminalStore.getState();
+    expect(terminalState.sessions[windowTerminalId]).toBeUndefined();
+    expect(terminalState.sessions[paneTerminalId]).toBeUndefined();
+    expect(useLayoutStore.getState().layouts[windowTerminalId]).toBeUndefined();
+    expect(Object.values(useProjectStore.getState().nodes).some((node) => node.terminalId === windowTerminalId)).toBe(false);
+  });
+});
