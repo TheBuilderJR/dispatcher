@@ -197,6 +197,75 @@ describe("restoredTmuxState", () => {
     expect(result.activeProjectId).toBe("p1");
   });
 
+  it("removes stale cross-project child references using the node parent as source of truth", () => {
+    const result = normalizeRestoredTmuxState({
+      sessions: {
+        t1: {
+          id: "t1",
+          title: "Moved",
+          notes: "",
+          hasDetectedActivity: false,
+          lastUserInputAt: 0,
+          lastOutputAt: 0,
+          isNeedsAttention: false,
+          isPossiblyDone: false,
+          isLongInactive: false,
+          isRecentlyFocused: false,
+          backendKind: "local",
+        },
+      },
+      activeTerminalId: "t1",
+      projects: {
+        p1: {
+          id: "p1",
+          name: "Old",
+          cwd: "/tmp",
+          rootGroupId: "root-a",
+          expanded: true,
+        },
+        p2: {
+          id: "p2",
+          name: "New",
+          cwd: "/tmp",
+          rootGroupId: "root-b",
+          expanded: true,
+        },
+      },
+      nodes: {
+        "root-a": {
+          id: "root-a",
+          type: "group",
+          name: "Root",
+          parentId: null,
+          children: ["node-1"],
+        },
+        "root-b": {
+          id: "root-b",
+          type: "group",
+          name: "Root",
+          parentId: null,
+          children: ["node-1"],
+        },
+        "node-1": {
+          id: "node-1",
+          type: "terminal",
+          name: "Moved",
+          terminalId: "t1",
+          parentId: "root-b",
+        },
+      },
+      activeProjectId: "p1",
+      projectOrder: ["p1", "p2"],
+      layouts: {
+        t1: leaf("t1"),
+      },
+    });
+
+    expect(result.nodes["root-a"].children).toEqual([]);
+    expect(result.nodes["root-b"].children).toEqual(["node-1"]);
+    expect(result.activeProjectId).toBe("p2");
+  });
+
   it("collapses legacy rootless layouts even when the old tmux marker is gone", () => {
     const result = normalizeRestoredTmuxState({
       sessions: {

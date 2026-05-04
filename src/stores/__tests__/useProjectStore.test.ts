@@ -123,6 +123,21 @@ describe("useProjectStore", () => {
       expect(nodes["newParent"].children).toEqual(["child1"]);
       expect(nodes["child1"].parentId).toBe("newParent");
     });
+
+    it("removes stale references from every parent when moving a node", () => {
+      const store = useProjectStore.getState();
+      store.addNode({ id: "oldParent", type: "group", name: "Old", children: ["child1"], parentId: null });
+      store.addNode({ id: "staleParent", type: "group", name: "Stale", children: ["child1"], parentId: null });
+      store.addNode({ id: "newParent", type: "group", name: "New", children: ["child1"], parentId: null });
+      store.addNode({ id: "child1", type: "terminal", name: "T", parentId: "oldParent", terminalId: "t1" });
+
+      store.moveNode("child1", "newParent");
+      const nodes = useProjectStore.getState().nodes;
+      expect(nodes["oldParent"].children).toEqual([]);
+      expect(nodes["staleParent"].children).toEqual([]);
+      expect(nodes["newParent"].children).toEqual(["child1"]);
+      expect(nodes["child1"].parentId).toBe("newParent");
+    });
   });
 
   describe("addChildToNode", () => {

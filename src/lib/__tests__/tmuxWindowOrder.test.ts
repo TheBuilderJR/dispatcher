@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildPreferredTmuxWindowOrder,
   mergeTmuxWindowNodesIntoChildren,
+  reconcileTmuxWindowNodePlacements,
 } from "../tmuxWindowOrder";
 
 describe("tmuxWindowOrder", () => {
@@ -31,5 +32,43 @@ describe("tmuxWindowOrder", () => {
       transportNodeId: "transport",
       preferredWindowNodeOrder: ["node-a", "node-b"],
     })).toEqual(["before", "transport", "node-a", "node-b", "after"]);
+  });
+
+  it("removes stale cross-project references when a tmux window node was moved", () => {
+    expect(reconcileTmuxWindowNodePlacements({
+      currentChildrenByParentId: {
+        "group-a": ["transport", "node-a", "node-b", "local-a"],
+        "group-b": ["local-b", "node-b"],
+      },
+      nodeParentByNodeId: {
+        "node-a": "group-a",
+        "node-b": "group-b",
+      },
+      windowNodeIds: ["node-a", "node-b"],
+      preferredWindowNodeOrder: ["node-a", "node-b"],
+      transportNodeId: "transport",
+    })).toEqual({
+      "group-a": ["transport", "node-a", "local-a"],
+      "group-b": ["local-b", "node-b"],
+    });
+  });
+
+  it("inserts a missing tmux window only under its authoritative parent", () => {
+    expect(reconcileTmuxWindowNodePlacements({
+      currentChildrenByParentId: {
+        "group-a": ["transport", "node-a"],
+        "group-b": [],
+      },
+      nodeParentByNodeId: {
+        "node-a": "group-a",
+        "node-b": "group-b",
+      },
+      windowNodeIds: ["node-a", "node-b"],
+      preferredWindowNodeOrder: ["node-a", "node-b"],
+      transportNodeId: "transport",
+    })).toEqual({
+      "group-a": ["transport", "node-a"],
+      "group-b": ["node-b"],
+    });
   });
 });

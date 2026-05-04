@@ -43,3 +43,43 @@ export function mergeTmuxWindowNodesIntoChildren(options: {
   result.splice(insertIndex, 0, ...missingWindowNodeIds);
   return result;
 }
+
+export function reconcileTmuxWindowNodePlacements(options: {
+  currentChildrenByParentId: Record<string, readonly string[]>;
+  nodeParentByNodeId: Record<string, string | null | undefined>;
+  windowNodeIds: readonly string[];
+  preferredWindowNodeOrder: readonly string[];
+  transportNodeId: string;
+}): Record<string, string[]> {
+  const windowNodeIdSet = new Set(options.windowNodeIds);
+  const parentIds = new Set(Object.keys(options.currentChildrenByParentId));
+
+  for (const nodeId of options.windowNodeIds) {
+    const parentNodeId = options.nodeParentByNodeId[nodeId];
+    if (parentNodeId) {
+      parentIds.add(parentNodeId);
+    }
+  }
+
+  const nextChildrenByParentId: Record<string, string[]> = {};
+  for (const parentNodeId of parentIds) {
+    const currentChildren = options.currentChildrenByParentId[parentNodeId] ?? [];
+    const cleanedChildren = currentChildren.filter((childId) => {
+      if (!windowNodeIdSet.has(childId)) {
+        return true;
+      }
+      return options.nodeParentByNodeId[childId] === parentNodeId;
+    });
+    const preferredWindowNodeOrder = options.preferredWindowNodeOrder.filter(
+      (nodeId) => options.nodeParentByNodeId[nodeId] === parentNodeId
+    );
+
+    nextChildrenByParentId[parentNodeId] = mergeTmuxWindowNodesIntoChildren({
+      currentChildren: cleanedChildren,
+      transportNodeId: options.transportNodeId,
+      preferredWindowNodeOrder,
+    });
+  }
+
+  return nextChildrenByParentId;
+}

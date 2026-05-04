@@ -262,7 +262,10 @@ export function normalizeRestoredTmuxState(
       continue;
     }
 
-    const filteredChildren = dedupeIds(node.children)?.filter((childId) => Boolean(nodes[childId])) ?? [];
+    const filteredChildren = dedupeIds(node.children)?.filter((childId) => {
+      const child = nodes[childId];
+      return Boolean(child) && child.parentId === nodeId;
+    }) ?? [];
     if ((node.children ?? []).length !== filteredChildren.length) {
       nodes[nodeId] = {
         ...node,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildTmuxNewWindowCommand,
+  buildTmuxPaneCaptureCommand,
   buildTmuxPaneSnapshotCommand,
   buildTmuxWindowSnapshotCommand,
   encodeTmuxSendKeysHex,
@@ -38,6 +39,25 @@ describe("tmuxControlProtocol", () => {
       height: 24,
       isActive: false,
       cwd: "/tmp/project",
+      cursorX: 0,
+      cursorY: 0,
+      alternateOn: false,
+    });
+  });
+
+  it("parses tmux pane snapshots with cursor and alternate-screen metadata", () => {
+    expect(parseTmuxPaneSnapshot("@1\t%3\t0\t12\t80\t24\t1\t/tmp/project\t5\t9\t1")).toEqual({
+      windowId: "@1",
+      paneId: "%3",
+      left: 0,
+      top: 12,
+      width: 80,
+      height: 24,
+      isActive: true,
+      cwd: "/tmp/project",
+      cursorX: 5,
+      cursorY: 9,
+      alternateOn: true,
     });
   });
 
@@ -57,11 +77,18 @@ describe("tmuxControlProtocol", () => {
     expect(buildTmuxWindowSnapshotCommand()).toBe(
       'list-windows -F "#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}"'
     );
+    expect(buildTmuxWindowSnapshotCommand("@24")).toBe(
+      'display-message -p -t @24 "#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}"'
+    );
     expect(buildTmuxPaneSnapshotCommand({ allWindows: true })).toBe(
-      'list-panes -a -F "#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}"'
+      'list-panes -a -F "#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}"'
     );
     expect(buildTmuxPaneSnapshotCommand({ targetWindowId: "@24" })).toBe(
-      'list-panes -t @24 -F "#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}"'
+      'list-panes -t @24 -F "#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}"'
+    );
+    expect(buildTmuxPaneCaptureCommand({ paneId: "%3" })).toBe("capture-pane -p -e -t %3");
+    expect(buildTmuxPaneCaptureCommand({ paneId: "%3", alternateScreen: true })).toBe(
+      "capture-pane -p -e -a -q -t %3"
     );
   });
 

@@ -236,11 +236,13 @@ export const useProjectStore = create<ProjectStore>()(
 
           let newNodes = { ...state.nodes };
 
-          if (node.parentId && newNodes[node.parentId]) {
-            const oldParent = newNodes[node.parentId];
-            newNodes[node.parentId] = {
-              ...oldParent,
-              children: (oldParent.children ?? []).filter((c) => c !== nodeId),
+          for (const [parentId, maybeParent] of Object.entries(newNodes)) {
+            if (!maybeParent.children?.includes(nodeId)) {
+              continue;
+            }
+            newNodes[parentId] = {
+              ...maybeParent,
+              children: maybeParent.children.filter((c) => c !== nodeId),
             };
           }
 
