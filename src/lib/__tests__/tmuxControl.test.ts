@@ -351,6 +351,7 @@ describe("tmuxControl", () => {
     await Promise.resolve();
 
     const thirdWindowTerminalId = getWindowTerminalIdByWindowId("@3");
+    const thirdPaneTerminalId = getPaneTerminalIdByPaneId("%3");
     const thirdNodeId = getNodeIdForTerminalId(thirdWindowTerminalId);
     expect(useProjectStore.getState().nodes.root.children).toEqual([
       "transport-node",
@@ -358,6 +359,29 @@ describe("tmuxControl", () => {
       thirdNodeId,
       secondNodeId,
     ]);
+    expect(useTerminalStore.getState().activeTerminalId).toBe(thirdPaneTerminalId);
+  });
+
+  it("does not let tmux session focus notifications activate sibling Dispatcher tabs", async () => {
+    const transportTerminalId = "transport-focus-boundary";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateTwoWindows(transportTerminalId);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const firstPaneTerminalId = getPaneTerminalIdByPaneId("%1");
+    const secondPaneTerminalId = getPaneTerminalIdByPaneId("%2");
+    useTerminalStore.getState().setActiveTerminal(firstPaneTerminalId);
+    focusTerminalInstanceMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%session-window-changed $0 @2\n");
+    routeTmuxTransportOutput(transportTerminalId, "%window-pane-changed @2 %2\n");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useTerminalStore.getState().activeTerminalId).toBe(firstPaneTerminalId);
+    expect(focusTerminalInstanceMock).not.toHaveBeenCalledWith(secondPaneTerminalId);
   });
 
   it("keeps control mode alive when captured pane content contains string terminators", async () => {

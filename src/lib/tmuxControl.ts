@@ -114,6 +114,7 @@ interface TmuxControlSession {
   hydrationPromise: Promise<void> | null;
   bootstrapRefreshTimer: number | null;
   pendingNewWindowAnchors: PendingNewWindowAnchor[];
+  pendingNewWindowActivations: Map<string, string>;
   windowSizes: Map<string, string>;
   outputLogCount: number;
   outputLogSuppressed: boolean;
@@ -297,6 +298,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     hydrationPromise: null,
     bootstrapRefreshTimer: null,
     pendingNewWindowAnchors: [],
+    pendingNewWindowActivations: new Map(),
     windowSizes: new Map(),
     outputLogCount: 0,
     outputLogSuppressed: false,
@@ -808,6 +810,7 @@ function removeWindowProjection(session: TmuxControlSession, windowId: string) {
   windowTerminalToSessionId.delete(window.terminalId);
   session.windows.delete(windowId);
   session.windowOrder = session.windowOrder.filter((id) => id !== windowId);
+  session.pendingNewWindowActivations.delete(windowId);
 
   const activeTerminalId = useTerminalStore.getState().activeTerminalId;
   if (activeTerminalId && (activeTerminalId === window.terminalId || paneTerminalIds.includes(activeTerminalId))) {
@@ -874,6 +877,7 @@ function detachControlSessionProjections(session: TmuxControlSession, reason: st
   session.panes.clear();
   session.windowOrder = [];
   session.pendingNewWindowAnchors = [];
+  session.pendingNewWindowActivations.clear();
   session.pendingPaneOutput.clear();
 }
 
@@ -1174,25 +1178,60 @@ function upsertWindowProjection(
   setLayout(windowState.terminalId, buildLayoutFromTmuxPanes(layoutPanes));
 }
 
-function setFocusedTmuxPane(session: TmuxControlSession, windowId: string, paneId: string) {
+function setFocusedTmuxPane(
+  session: TmuxControlSession,
+  windowId: string,
+  paneId: string,
+  options?: {
+    allowWindowSwitch?: boolean;
+    requiredActiveWindowId?: string;
+  }
+): boolean {
   const window = session.windows.get(windowId);
   const pane = session.panes.get(paneId);
   if (!window || !pane) {
-    return;
+    return false;
   }
 
   window.activePaneId = paneId;
   const activeTerminalId = useTerminalStore.getState().activeTerminalId;
   const activeSession = activeTerminalId ? getTerminalSession(activeTerminalId) : null;
-  const belongsToSession = activeTerminalId === session.transportTerminalId || activeSession?.tmuxControlSessionId === session.id;
-  if (!belongsToSession) {
-    return;
+  const belongsToWindow =
+    activeTerminalId === window.terminalId
+    || (
+      activeSession?.tmuxControlSessionId === session.id
+      && activeSession.tmuxWindowId === windowId
+    );
+  const canAdoptFromTransport = activeTerminalId === session.transportTerminalId;
+  const canSwitchFromActiveWindow =
+    activeSession?.tmuxControlSessionId === session.id
+    && (
+      !options?.requiredActiveWindowId
+      || activeSession.tmuxWindowId === options.requiredActiveWindowId
+    );
+  const canSwitchWindow =
+    options?.allowWindowSwitch === true
+    && (
+      canAdoptFromTransport
+      || canSwitchFromActiveWindow
+    );
+  if (!belongsToWindow && !canAdoptFromTransport && !canSwitchWindow) {
+    debugLog("tmux.focus", "ignore sibling window notification", {
+      sessionId: session.id,
+      windowId,
+      paneId,
+      activeTerminalId,
+      activeTmuxWindowId: activeSession?.tmuxWindowId ?? null,
+      requiredActiveWindowId: options?.requiredActiveWindowId ?? null,
+    });
+    return false;
   }
 
   const placement = adoptSessionPlacementFromWindow(session, window);
   useProjectStore.getState().setActiveProject(placement.projectId);
   useTerminalStore.getState().setActiveTerminal(pane.terminalId);
   focusTerminalInstance(pane.terminalId);
+  return true;
 }
 
 async function sendCommand(session: TmuxControlSession, command: string): Promise<string[]> {
@@ -1323,7 +1362,9 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
   upsertWindowProjection(session, snapshot, paneSnapshots);
   syncWindowNodeOrder(session);
 
-  if (snapshot.isActive) {
+  const pendingActivationAnchorWindowId = session.pendingNewWindowActivations.get(snapshot.windowId) ?? null;
+  const shouldActivateNewWindow = pendingActivationAnchorWindowId !== null;
+  if (snapshot.isActive || shouldActivateNewWindow) {
     const activePaneId = paneSnapshots.find((pane) => pane.isActive)?.paneId
       ?? session.windows.get(snapshot.windowId)?.activePaneId
       ?? null;
@@ -1332,8 +1373,22 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
         sessionId: session.id,
         windowId: snapshot.windowId,
         paneId: activePaneId,
+        userCreatedWindow: shouldActivateNewWindow,
       });
-      setFocusedTmuxPane(session, snapshot.windowId, activePaneId);
+      setFocusedTmuxPane(
+        session,
+        snapshot.windowId,
+        activePaneId,
+        shouldActivateNewWindow
+          ? {
+            allowWindowSwitch: true,
+            requiredActiveWindowId: pendingActivationAnchorWindowId ?? undefined,
+          }
+          : undefined
+      );
+      if (shouldActivateNewWindow) {
+        session.pendingNewWindowActivations.delete(snapshot.windowId);
+      }
     }
   }
 
@@ -1433,13 +1488,9 @@ async function hydrateControlSession(session: TmuxControlSession) {
         ?? (panesByWindowId.get(activeWindow.windowId) ?? [])[0]
       : null;
     if (activeWindow && activePane) {
-      setFocusedTmuxPane(session, activeWindow.windowId, activePane.paneId);
-
-      const activePaneState = session.panes.get(activePane.paneId);
-      if (activePaneState) {
-        useTerminalStore.getState().setActiveTerminal(activePaneState.terminalId);
-        focusTerminalInstance(activePaneState.terminalId);
-      }
+      setFocusedTmuxPane(session, activeWindow.windowId, activePane.paneId, {
+        allowWindowSwitch: true,
+      });
     }
     if (activeWindow && !session.transportMetadataAdopted) {
       adoptTransportMetadataForWindow(session, activeWindow.windowId);
@@ -1716,6 +1767,9 @@ function handleNotification(session: TmuxControlSession, line: string) {
         windowId,
         anchor?.anchorWindowId ?? null
       );
+      if (anchor) {
+        session.pendingNewWindowActivations.set(windowId, anchor.anchorWindowId);
+      }
       scheduleRefresh(session, windowId);
     }
     return;
@@ -1933,6 +1987,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     hydrationPromise: null,
     bootstrapRefreshTimer: null,
     pendingNewWindowAnchors: [],
+    pendingNewWindowActivations: new Map(),
     windowSizes: new Map(),
     outputLogCount: 0,
     outputLogSuppressed: false,
