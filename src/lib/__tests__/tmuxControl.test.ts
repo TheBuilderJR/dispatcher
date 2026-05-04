@@ -27,7 +27,7 @@ import type { TerminalSession } from "../../types/terminal";
 import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
-import { TMUX_CONTROL_START } from "../tmuxControlProtocol";
+import { TMUX_CONTROL_END, TMUX_CONTROL_START } from "../tmuxControlProtocol";
 import { createTmuxWindowForTerminal, routeTmuxTransportOutput } from "../tmuxControl";
 
 function makeTerminalSession(
@@ -358,6 +358,91 @@ describe("tmuxControl", () => {
       thirdNodeId,
       secondNodeId,
     ]);
+  });
+
+  it("keeps control mode alive when captured pane content contains string terminators", async () => {
+    const transportTerminalId = "transport-capture-string-terminator";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId, paneTerminalId } = getHydratedTmuxIds();
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 3 0",
+        `before ${TMUX_CONTROL_END} after`,
+        "%end 3 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useTerminalStore.getState().sessions[transportTerminalId]).toMatchObject({
+      backendKind: "tmux-transport",
+      tmuxControlSessionId: transportTerminalId,
+    });
+    expect(useTerminalStore.getState().sessions[windowTerminalId]).toMatchObject({
+      backendKind: "tmux-window",
+      tmuxControlSessionId: transportTerminalId,
+      tmuxWindowId: "@1",
+    });
+    expect(useTerminalStore.getState().sessions[paneTerminalId]).toMatchObject({
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: transportTerminalId,
+      tmuxPaneId: "%1",
+    });
+  });
+
+  it("keeps existing tmux windows when a full refresh response is not a snapshot", async () => {
+    const transportTerminalId = "transport-bad-refresh";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId, paneTerminalId } = getHydratedTmuxIds();
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 3 0",
+        "captured pane content",
+        "%end 3 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    routeTmuxTransportOutput(transportTerminalId, "%sessions-changed\n");
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 4 0",
+        "captured text is not a window snapshot",
+        "%end 4 0",
+        "%begin 5 0",
+        "captured text is not a pane snapshot",
+        "%end 5 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useTerminalStore.getState().sessions[windowTerminalId]).toMatchObject({
+      backendKind: "tmux-window",
+      tmuxControlSessionId: transportTerminalId,
+      tmuxWindowId: "@1",
+      title: "happy",
+    });
+    expect(useTerminalStore.getState().sessions[paneTerminalId]).toMatchObject({
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: transportTerminalId,
+      tmuxPaneId: "%1",
+    });
+    expect(useLayoutStore.getState().layouts[windowTerminalId]).toBeDefined();
   });
 
   it("still removes the Dispatcher tab when tmux reports that the window closed", async () => {

@@ -50,7 +50,7 @@ export function buildTmuxPaneCaptureCommand(options: {
   paneId: string;
   alternateScreen?: boolean;
 }): string {
-  const flags = options.alternateScreen ? "-p -e -a -q" : "-p -e";
+  const flags = options.alternateScreen ? "-p -e -C -a -q" : "-p -e -C";
   return `capture-pane ${flags} -t ${options.paneId}`;
 }
 

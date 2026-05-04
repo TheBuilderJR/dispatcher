@@ -16,7 +16,6 @@ import {
   parseTmuxPaneSnapshot,
   parseTmuxWindowSnapshot,
   quoteTmuxCommandArgument,
-  selectTmuxWindowSnapshot,
   unescapeTmuxOutput,
   type TmuxPaneSnapshot,
   type TmuxWindowSnapshot,
@@ -927,6 +926,15 @@ function upsertWindowProjection(
   snapshot: TmuxWindowSnapshot,
   panes: readonly TmuxPaneSnapshot[]
 ) {
+  if (panes.length === 0) {
+    debugLog("tmux.session", "skip window projection with no panes", {
+      sessionId: session.id,
+      windowId: snapshot.windowId,
+      title: snapshot.title,
+    });
+    return;
+  }
+
   let windowState = session.windows.get(snapshot.windowId);
   const disconnectedWindowPlaceholder = !windowState
     ? findDisconnectedWindowPlaceholder(session, snapshot.windowId, snapshot.title)
@@ -1235,7 +1243,7 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
     ensureTerminalFrontend(pane.terminalId);
     const cursorRow = Math.max(1, Math.floor(pane.cursorY) + 1);
     const cursorCol = Math.max(1, Math.floor(pane.cursorX) + 1);
-    const content = lines.join("\r\n");
+    const content = unescapeTmuxOutput(lines.join("\r\n"));
     queueTerminalOutput(
       pane.terminalId,
       `\u001b[0m\u001b[H\u001b[2J${content}\u001b[0m\u001b[${cursorRow};${cursorCol}H`
@@ -1263,7 +1271,10 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
     sendCommand(session, buildTmuxPaneSnapshotCommand({ targetWindowId: windowId })),
   ]);
 
-  const snapshot = selectTmuxWindowSnapshot(windowLines, windowId);
+  const windowSnapshots = windowLines
+    .map(parseTmuxWindowSnapshot)
+    .filter((value): value is TmuxWindowSnapshot => Boolean(value));
+  const snapshot = windowSnapshots.find((value) => value.windowId === windowId) ?? null;
   if (!snapshot) {
     debugLog("tmux.refresh", "refresh window missing snapshot", {
       sessionId: session.id,
@@ -1272,6 +1283,9 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
       paneLineCount: paneLines.length,
       windowLines: windowLines.map((line) => previewDebugText(line, 120)),
     });
+    if (windowLines.length > 0) {
+      return;
+    }
     removeWindowProjection(session, windowId);
     syncWindowNodeOrder(session);
     return;
@@ -1280,6 +1294,18 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
   const paneSnapshots = paneLines
     .map(parseTmuxPaneSnapshot)
     .filter((value): value is TmuxPaneSnapshot => Boolean(value));
+  if (paneSnapshots.length === 0) {
+    debugLog("tmux.refresh", "refresh window missing panes", {
+      sessionId: session.id,
+      windowId,
+      title: snapshot.title,
+      windowLineCount: windowLines.length,
+      paneLineCount: paneLines.length,
+      paneLines: paneLines.map((line) => previewDebugText(line, 120)),
+    });
+    return;
+  }
+
   upsertWindowProjection(session, snapshot, paneSnapshots);
   syncWindowNodeOrder(session);
 
@@ -1335,6 +1361,20 @@ async function hydrateControlSession(session: TmuxControlSession) {
     const paneSnapshots = paneLines
       .map(parseTmuxPaneSnapshot)
       .filter((value): value is TmuxPaneSnapshot => Boolean(value));
+
+    if (windowSnapshots.length === 0 || paneSnapshots.length === 0) {
+      debugLog("tmux.session", "hydrate skipped unsafe snapshot", {
+        sessionId: session.id,
+        transportTerminalId: session.transportTerminalId,
+        windowLineCount: windowLines.length,
+        paneLineCount: paneLines.length,
+        parsedWindows: windowSnapshots.length,
+        parsedPanes: paneSnapshots.length,
+        windowLines: windowLines.slice(0, 5).map((line) => previewDebugText(line, 120)),
+        paneLines: paneLines.slice(0, 5).map((line) => previewDebugText(line, 120)),
+      });
+      return;
+    }
 
     const panesByWindowId = new Map<string, TmuxPaneSnapshot[]>();
     for (const pane of paneSnapshots) {
@@ -1993,6 +2033,15 @@ export function routeTmuxTransportOutput(terminalId: string, data: string): stri
 
     processControlChunk(session, remaining.slice(0, endIndex));
     remaining = remaining.slice(endIndex + TMUX_CONTROL_END.length);
+    if (session.currentCommand !== null) {
+      processControlChunk(session, TMUX_CONTROL_END);
+      debugLog("tmux.transport", "end marker treated as command output", {
+        terminalId,
+        sessionId: session.id,
+        command: session.currentCommand.pending?.command ?? null,
+      });
+      continue;
+    }
     if (controlSessions.has(session.id)) {
       debugLog("tmux.transport", "end marker detected", {
         terminalId,
