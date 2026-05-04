@@ -25,6 +25,7 @@ export function mergeTmuxWindowNodesIntoChildren(options: {
   currentChildren: readonly string[];
   transportNodeId: string;
   preferredWindowNodeOrder: readonly string[];
+  missingWindowPlacement?: "after-anchor" | "append";
 }): string[] {
   const currentChildSet = new Set(options.currentChildren);
   const missingWindowNodeIds = options.preferredWindowNodeOrder.filter(
@@ -33,6 +34,10 @@ export function mergeTmuxWindowNodesIntoChildren(options: {
 
   if (missingWindowNodeIds.length === 0) {
     return [...options.currentChildren];
+  }
+
+  if (options.missingWindowPlacement === "append") {
+    return [...options.currentChildren, ...missingWindowNodeIds];
   }
 
   const result = [...options.currentChildren];
@@ -59,6 +64,7 @@ export function reconcileTmuxWindowNodePlacements(options: {
   windowNodeIds: readonly string[];
   preferredWindowNodeOrder: readonly string[];
   transportNodeId: string;
+  missingWindowPlacement?: "after-anchor" | "append";
 }): Record<string, string[]> {
   const windowNodeIdSet = new Set(options.windowNodeIds);
   const parentIds = new Set(Object.keys(options.currentChildrenByParentId));
@@ -87,6 +93,7 @@ export function reconcileTmuxWindowNodePlacements(options: {
       currentChildren: cleanedChildren,
       transportNodeId: options.transportNodeId,
       preferredWindowNodeOrder,
+      missingWindowPlacement: options.missingWindowPlacement,
     });
   }
 

@@ -445,6 +445,92 @@ describe("tmuxControl", () => {
     expect(useLayoutStore.getState().layouts[windowTerminalId]).toBeDefined();
   });
 
+  it("appends newly discovered windows on restore without moving existing sidebar tabs", async () => {
+    const transportTerminalId = "transport-restore-order";
+    seedTransportTerminal(transportTerminalId);
+
+    useTerminalStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        "window-two": makeTerminalSession("window-two", {
+          title: "two",
+          backendKind: "tmux-window",
+          tmuxWindowId: "@2",
+        }),
+        local: makeTerminalSession("local", { title: "local" }),
+      },
+    }));
+    useProjectStore.setState((state) => ({
+      nodes: {
+        ...state.nodes,
+        root: {
+          ...state.nodes.root,
+          children: ["transport-node", "window-two-node", "local-node"],
+        },
+        "window-two-node": {
+          id: "window-two-node",
+          type: "terminal",
+          name: "two",
+          terminalId: "window-two",
+          parentId: "root",
+        },
+        "local-node": {
+          id: "local-node",
+          type: "terminal",
+          name: "local",
+          terminalId: "local",
+          parentId: "root",
+        },
+      },
+    }));
+    useLayoutStore.setState((state) => ({
+      layouts: {
+        ...state.layouts,
+        "window-two": {
+          type: "terminal",
+          id: "layout-window-two",
+          terminalId: "window-two",
+        },
+        local: {
+          type: "terminal",
+          id: "layout-local",
+          terminalId: "local",
+        },
+      },
+    }));
+
+    routeTmuxTransportOutput(transportTerminalId, TMUX_CONTROL_START);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.runOnlyPendingTimersAsync();
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 1 0",
+        "@1\tone\t0\t-",
+        "@2\ttwo\t1\t*",
+        "%end 1 0",
+        "%begin 2 0",
+        "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren/one\t4\t7\t0",
+        "@2\t%2\t0\t0\t80\t24\t1\t/Users/bobren/two\t1\t2\t0",
+        "%end 2 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const newWindowNodeId = getNodeIdForTerminalId(getWindowTerminalIdByWindowId("@1"));
+    expect(useProjectStore.getState().nodes.root.children).toEqual([
+      "transport-node",
+      "window-two-node",
+      "local-node",
+      newWindowNodeId,
+    ]);
+  });
+
   it("still removes the Dispatcher tab when tmux reports that the window closed", async () => {
     const transportTerminalId = "transport-close";
     seedTransportTerminal(transportTerminalId);

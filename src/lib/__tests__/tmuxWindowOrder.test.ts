@@ -42,6 +42,15 @@ describe("tmuxWindowOrder", () => {
     })).toEqual(["transport", "node-a", "node-c", "node-b", "local-shell"]);
   });
 
+  it("can append missing restored tmux windows without moving existing sidebar entries", () => {
+    expect(mergeTmuxWindowNodesIntoChildren({
+      currentChildren: ["transport", "node-b", "local-shell"],
+      transportNodeId: "transport",
+      preferredWindowNodeOrder: ["node-b", "node-c"],
+      missingWindowPlacement: "append",
+    })).toEqual(["transport", "node-b", "local-shell", "node-c"]);
+  });
+
   it("removes stale cross-project references when a tmux window node was moved", () => {
     expect(reconcileTmuxWindowNodePlacements({
       currentChildrenByParentId: {

@@ -585,6 +585,14 @@ function getDisconnectedPanePlaceholders(
   return placeholders;
 }
 
+function hasDisconnectedWindowPlaceholder(windowId: string): boolean {
+  return Object.values(useTerminalStore.getState().sessions).some((session) =>
+    session.backendKind === "tmux-window"
+    && !session.tmuxControlSessionId
+    && session.tmuxWindowId === windowId
+  );
+}
+
 function removeWindowNodeFromParent(parentNodeId: string, nodeId: string) {
   const parent = useProjectStore.getState().nodes[parentNodeId];
   if (!parent?.children) {
@@ -664,7 +672,12 @@ function insertWindowIdAfterAnchor(
   return order;
 }
 
-function syncWindowNodeOrder(session: TmuxControlSession) {
+function syncWindowNodeOrder(
+  session: TmuxControlSession,
+  options?: {
+    preserveExistingSidebarOrder?: boolean;
+  }
+) {
   const projectState = useProjectStore.getState();
 
   const windowNodeIds = session.windowOrder
@@ -707,6 +720,7 @@ function syncWindowNodeOrder(session: TmuxControlSession) {
     windowNodeIds,
     preferredWindowNodeOrder: windowNodeIds,
     transportNodeId: session.transportNodeId,
+    missingWindowPlacement: options?.preserveExistingSidebarOrder ? "append" : "after-anchor",
   });
 
   const changedParentNodeIds = Object.entries(nextChildrenByParentId)
@@ -1386,6 +1400,10 @@ async function hydrateControlSession(session: TmuxControlSession) {
       }
     }
 
+    const preserveExistingSidebarOrder =
+      session.windows.size > 0
+      || windowSnapshots.some((snapshot) => hasDisconnectedWindowPlaceholder(snapshot.windowId));
+
     const nextWindowIds = new Set(windowSnapshots.map((snapshot) => snapshot.windowId));
     for (const existingWindowId of [...session.windows.keys()]) {
       if (!nextWindowIds.has(existingWindowId)) {
@@ -1407,7 +1425,7 @@ async function hydrateControlSession(session: TmuxControlSession) {
       snapshotWindowOrder: windowSnapshots.map((snapshot) => snapshot.windowId),
     });
 
-    syncWindowNodeOrder(session);
+    syncWindowNodeOrder(session, { preserveExistingSidebarOrder });
 
     const activeWindow = windowSnapshots.find((snapshot) => snapshot.isActive) ?? windowSnapshots[0];
     const activePane = activeWindow
