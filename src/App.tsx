@@ -19,12 +19,14 @@ import { useTerminalScreenshotMonitor } from "./hooks/useTerminalScreenshotMonit
 import {
   closeTmuxTerminal,
   createTmuxWindowForTerminal,
+  handleTransportTerminalExit,
   handleTmuxTerminalFocus,
   isDisconnectedTmuxPlaceholderTerminal,
   isLiveTmuxTerminal,
   resolvePreferredTerminalFocus,
   splitTmuxTerminal,
 } from "./lib/tmuxControl";
+import { onTerminalExit } from "./lib/terminalEvents";
 import { collectVisibleTerminalRefs, findProjectIdForTerminal } from "./lib/treeUtils";
 import "./App.css";
 
@@ -163,6 +165,14 @@ export default function App() {
     warmPool(3).catch(() => {});
     const id = setInterval(() => refreshPool().catch(() => {}), 5 * 60 * 1000);
     return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    onTerminalExit((payload) => {
+      handleTransportTerminalExit(payload.terminal_id);
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
   }, []);
 
   // Apply UI colors from color scheme on mount and subscribe to changes

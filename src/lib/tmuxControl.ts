@@ -108,6 +108,7 @@ interface TmuxControlSession {
   outputLogCount: number;
   outputLogSuppressed: boolean;
   needsBootstrapRefresh: boolean;
+  pendingPaneOutput: Map<string, string[]>;
 }
 
 interface TmuxRuntimeState {
@@ -243,6 +244,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     outputLogCount: 0,
     outputLogSuppressed: false,
     needsBootstrapRefresh: false,
+    pendingPaneOutput: new Map(),
   };
 
   for (const [nodeId, node] of Object.entries(projectState.nodes)) {
@@ -772,6 +774,20 @@ function upsertWindowProjection(
         });
       }
       ensureTerminalFrontend(terminalId);
+
+      const buffered = session.pendingPaneOutput.get(paneSnapshot.paneId);
+      if (buffered) {
+        session.pendingPaneOutput.delete(paneSnapshot.paneId);
+        debugLog("tmux.session", "replay buffered pane output", {
+          sessionId: session.id,
+          paneId: paneSnapshot.paneId,
+          terminalId,
+          chunks: buffered.length,
+        });
+        for (const value of buffered) {
+          queueTerminalOutput(terminalId, unescapeTmuxOutput(value));
+        }
+      }
     }
 
     syncTerminalFrontendSize(paneState.terminalId, paneSnapshot.width, paneSnapshot.height);
@@ -1198,9 +1214,13 @@ function handleNotification(session: TmuxControlSession, line: string) {
     }
     const pane = session.panes.get(parsed.paneId);
     if (!pane) {
-      debugLog("tmux.notify", "output for unknown pane", {
+      const buffer = session.pendingPaneOutput.get(parsed.paneId) ?? [];
+      buffer.push(parsed.value);
+      session.pendingPaneOutput.set(parsed.paneId, buffer);
+      debugLog("tmux.notify", "buffer output for pending pane", {
         sessionId: session.id,
         paneId: parsed.paneId,
+        bufferedChunks: buffer.length,
         preview: previewDebugText(parsed.value, 120),
       });
       return;
@@ -1459,6 +1479,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     outputLogCount: 0,
     outputLogSuppressed: false,
     needsBootstrapRefresh: true,
+    pendingPaneOutput: new Map(),
   };
 
   controlSessions.set(session.id, session);
@@ -1933,4 +1954,25 @@ export function resizeTmuxPaneByTerminal(
     debugLogError("tmux.action", "resize-pane failed", error);
   });
   return true;
+}
+
+export function handleTransportTerminalExit(terminalId: string) {
+  const sessionId = transportTerminalToSessionId.get(terminalId);
+  if (!sessionId) {
+    return;
+  }
+
+  const session = controlSessions.get(sessionId);
+  if (!session) {
+    return;
+  }
+
+  debugLog("tmux.session", "transport terminal exited", {
+    terminalId,
+    sessionId: session.id,
+    windows: session.windows.size,
+    panes: session.panes.size,
+  });
+
+  teardownControlSession(session, "transport-pty-exit");
 }
