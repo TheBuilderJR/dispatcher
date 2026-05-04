@@ -474,7 +474,7 @@ function findDisconnectedWindowPlaceholder(
     sessionParentNodeId: session.parentNodeId,
     placeholderParentNodeId: placeholder.parentNodeId,
   })) {
-    debugLog("tmux.session", "rehome disconnected window placeholder", {
+    debugLog("tmux.session", "skip disconnected window placeholder", {
       sessionId: session.id,
       windowId,
       title: title ?? null,
@@ -482,8 +482,10 @@ function findDisconnectedWindowPlaceholder(
       terminalId: placeholder.terminalId,
       placeholderParentNodeId: placeholder.parentNodeId,
       sessionParentNodeId: session.parentNodeId,
+      placeholderProjectId: placeholder.projectId,
+      sessionProjectId: session.projectId,
     });
-    useProjectStore.getState().moveNode(placeholder.nodeId, session.parentNodeId);
+    return null;
   }
 
   return placeholder;
@@ -635,6 +637,37 @@ function removeWindowProjection(session: TmuxControlSession, windowId: string) {
   }
 }
 
+function removeOrphanedTmuxWindowPlaceholders(session: TmuxControlSession, windowId: string) {
+  const terminalState = useTerminalStore.getState();
+  const projectState = useProjectStore.getState();
+
+  for (const [terminalId, terminalSession] of Object.entries(terminalState.sessions)) {
+    if (
+      terminalSession.backendKind !== "tmux-window"
+      || terminalSession.tmuxControlSessionId
+      || terminalSession.tmuxWindowId !== windowId
+    ) {
+      continue;
+    }
+
+    const nodeEntry = findNodeByTerminalId(projectState.nodes, terminalId);
+    debugLog("tmux.session", "remove orphaned window placeholder", {
+      sessionId: session.id,
+      windowId,
+      terminalId,
+      nodeId: nodeEntry?.nodeId ?? null,
+    });
+
+    if (nodeEntry) {
+      removeWindowNodeFromParent(nodeEntry.node.parentId ?? "", nodeEntry.nodeId);
+      useProjectStore.getState().removeNode(nodeEntry.nodeId);
+    }
+    useLayoutStore.getState().removeLayout(terminalId);
+    disposeTerminalInstance(terminalId);
+    useTerminalStore.getState().removeSession(terminalId);
+  }
+}
+
 function upsertWindowProjection(
   session: TmuxControlSession,
   snapshot: TmuxWindowSnapshot,
@@ -645,6 +678,9 @@ function upsertWindowProjection(
     ? findDisconnectedWindowPlaceholder(session, snapshot.windowId, snapshot.title)
     : null;
   if (!windowState) {
+    if (!disconnectedWindowPlaceholder) {
+      removeOrphanedTmuxWindowPlaceholders(session, snapshot.windowId);
+    }
     const terminalId = disconnectedWindowPlaceholder?.terminalId ?? generateId();
     const nodeId = disconnectedWindowPlaceholder?.nodeId ?? generateId();
     windowState = {
