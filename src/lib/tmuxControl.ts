@@ -665,31 +665,58 @@ function removeWindowProjection(session: TmuxControlSession, windowId: string) {
 function removeOrphanedTmuxWindowPlaceholders(session: TmuxControlSession, windowId: string) {
   const terminalState = useTerminalStore.getState();
   const projectState = useProjectStore.getState();
+  const orphanTerminalIds: string[] = [];
 
   for (const [terminalId, terminalSession] of Object.entries(terminalState.sessions)) {
     if (
-      terminalSession.backendKind !== "tmux-window"
-      || terminalSession.tmuxControlSessionId
+      terminalSession.tmuxControlSessionId
       || terminalSession.tmuxWindowId !== windowId
     ) {
       continue;
     }
-
-    const nodeEntry = findNodeByTerminalId(projectState.nodes, terminalId);
-    debugLog("tmux.session", "remove orphaned window placeholder", {
-      sessionId: session.id,
-      windowId,
-      terminalId,
-      nodeId: nodeEntry?.nodeId ?? null,
-    });
-
-    if (nodeEntry) {
-      removeWindowNodeFromParent(nodeEntry.node.parentId ?? "", nodeEntry.nodeId);
-      useProjectStore.getState().removeNode(nodeEntry.nodeId);
+    if (
+      terminalSession.backendKind !== "tmux-window"
+      && terminalSession.backendKind !== "tmux-pane"
+    ) {
+      continue;
     }
+    orphanTerminalIds.push(terminalId);
+  }
+
+  if (orphanTerminalIds.length === 0) {
+    return;
+  }
+
+  const orphanSet = new Set(orphanTerminalIds);
+  const orphanNodeIds: string[] = [];
+
+  for (const [nodeId, node] of Object.entries(projectState.nodes)) {
+    if (node.type === "terminal" && node.terminalId && orphanSet.has(node.terminalId)) {
+      orphanNodeIds.push(nodeId);
+    }
+  }
+
+  debugLog("tmux.session", "remove orphaned window placeholders", {
+    sessionId: session.id,
+    windowId,
+    orphanTerminalIds,
+    orphanNodeIds,
+  });
+
+  for (const nodeId of orphanNodeIds) {
+    for (const [parentId, parentNode] of Object.entries(useProjectStore.getState().nodes)) {
+      if (parentNode.children?.includes(nodeId)) {
+        removeWindowNodeFromParent(parentId, nodeId);
+      }
+    }
+    useProjectStore.getState().removeNode(nodeId);
+  }
+
+  for (const terminalId of orphanTerminalIds) {
     useLayoutStore.getState().removeLayout(terminalId);
     disposeTerminalInstance(terminalId);
     useTerminalStore.getState().removeSession(terminalId);
+    paneTerminalToSessionId.delete(terminalId);
   }
 }
 
