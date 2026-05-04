@@ -421,6 +421,22 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
     macOptionClickForcesSelection: true,
     scrollback: DEFAULT_SCROLLBACK,
     allowProposedApi: true,
+    linkHandler: {
+      activate: (event, text) => {
+        if (!isLinkOpenModifierPressed(event)) {
+          return;
+        }
+        try {
+          const url = new URL(text);
+          if (url.protocol === "http:" || url.protocol === "https:") {
+            event.preventDefault();
+            void open(text).catch(() => {});
+          }
+        } catch {
+          // not a valid URL
+        }
+      },
+    },
   });
 
   const fitAddon = new FitAddon();
