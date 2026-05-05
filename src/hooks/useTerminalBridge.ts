@@ -58,6 +58,7 @@ interface TerminalBridgeRuntimeState {
   focusSequenceSuppressions: Map<string, FocusSequenceSuppression>;
   writeBuffers: Map<string, string[]>;
   writeRafs: Map<string, number>;
+  writeStatusRecorded: Set<string>;
   webglFailures: Map<Terminal, number>;
   webglProbeTimers: Map<Terminal, ReturnType<typeof setTimeout>>;
 }
@@ -69,6 +70,7 @@ declare global {
 
 function getTerminalBridgeRuntimeState(): TerminalBridgeRuntimeState {
   if (globalThis.__dispatcherTerminalBridgeRuntimeState) {
+    globalThis.__dispatcherTerminalBridgeRuntimeState.writeStatusRecorded ??= new Set<string>();
     debugLog("terminal.runtime", "reuse", {
       instances: globalThis.__dispatcherTerminalBridgeRuntimeState.instances.size,
       createdPtys: globalThis.__dispatcherTerminalBridgeRuntimeState.createdPtys.size,
@@ -84,6 +86,7 @@ function getTerminalBridgeRuntimeState(): TerminalBridgeRuntimeState {
     focusSequenceSuppressions: new Map<string, FocusSequenceSuppression>(),
     writeBuffers: new Map<string, string[]>(),
     writeRafs: new Map<string, number>(),
+    writeStatusRecorded: new Set<string>(),
     webglFailures: new Map<Terminal, number>(),
     webglProbeTimers: new Map<Terminal, ReturnType<typeof setTimeout>>(),
   };
@@ -115,6 +118,7 @@ const PARKING_ROOT_ID = "dispatcher-terminal-parking-root";
 
 const writeBuffers = terminalBridgeRuntime.writeBuffers;
 const writeRafs = terminalBridgeRuntime.writeRafs;
+const writeStatusRecorded = terminalBridgeRuntime.writeStatusRecorded;
 
 const WEBGL_OPT_IN_STORAGE_KEY = "dispatcher.webgl.enabled";
 
@@ -176,20 +180,26 @@ function persistWebglEnabled(enabled: boolean) {
 
 function batchedWrite(terminalId: string, data: string) {
   let buffer = writeBuffers.get(terminalId);
-  const shouldRecordOutput = !buffer || buffer.length === 0;
   if (!buffer) {
     buffer = [];
     writeBuffers.set(terminalId, buffer);
   }
   buffer.push(data);
 
-  if (shouldRecordOutput && data.length > 0) {
+  const shouldRecordOutput =
+    data.length > 0
+    && !isTransientFocusSequence(data)
+    && !writeStatusRecorded.has(terminalId);
+  if (shouldRecordOutput) {
+    writeStatusRecorded.add(terminalId);
     useTerminalStore.getState().markTerminalOutput(terminalId);
+    reflectImmediateTabOutput(terminalId);
   }
 
   if (!writeRafs.has(terminalId)) {
     const rafId = requestAnimationFrame(() => {
       writeRafs.delete(terminalId);
+      writeStatusRecorded.delete(terminalId);
       const buf = writeBuffers.get(terminalId);
       if (buf && buf.length > 0) {
         const combined = buf.join("");
@@ -223,6 +233,23 @@ export function reflectImmediateTabActivity(terminalId: string) {
   }
 }
 
+function reflectImmediateTabOutput(terminalId: string) {
+  const terminalStore = useTerminalStore.getState();
+  const layouts = useLayoutStore.getState().layouts;
+  const tabRootTerminalId = findLayoutKeyForTerminal(layouts, terminalId) ?? terminalId;
+  const statusTerminalIds = getTabStatusTerminalIds(
+    layouts,
+    tabRootTerminalId,
+    new Set(Object.keys(terminalStore.sessions))
+  );
+
+  for (const statusTerminalId of statusTerminalIds) {
+    terminalStore.setDetectedActivity(statusTerminalId, true);
+    terminalStore.setPossiblyDone(statusTerminalId, false);
+    terminalStore.setLongInactive(statusTerminalId, false);
+  }
+}
+
 function disposeWriteBatch(terminalId: string) {
   const rafId = writeRafs.get(terminalId);
   if (rafId !== undefined) {
@@ -230,6 +257,7 @@ function disposeWriteBatch(terminalId: string) {
     writeRafs.delete(terminalId);
   }
   writeBuffers.delete(terminalId);
+  writeStatusRecorded.delete(terminalId);
 }
 
 function shouldSuppressSyntheticEcho(terminalId: string, data: string): boolean {

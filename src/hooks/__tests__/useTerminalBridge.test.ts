@@ -136,6 +136,7 @@ vi.mock("../../components/common/FontSettings", () => ({
 import {
   disposeTerminalInstance,
   ensureTerminalScreenshotTarget,
+  queueTerminalOutput,
   reflectImmediateTabActivity,
   sendSyntheticTerminalInput,
   syncTerminalFrontendSize,
@@ -153,10 +154,15 @@ describe("useTerminalBridge synthetic input", () => {
     warmPoolMock.mockClear();
     appendDebugLogMock.mockClear();
     document.body.innerHTML = "";
+    useLayoutStore.setState({ layouts: {} });
+    useTerminalStore.setState({ sessions: {}, activeTerminalId: null });
   });
 
   afterEach(() => {
     disposeTerminalInstance("term-scroll-test");
+    disposeTerminalInstance("tmux-pane-test");
+    disposeTerminalInstance("tab-root");
+    disposeTerminalInstance("pane");
   });
 
   it("scrolls synthetic terminal input to the bottom before writing to the PTY", () => {
@@ -216,5 +222,48 @@ describe("useTerminalBridge synthetic input", () => {
     expect(useTerminalStore.getState().sessions["tab-root"].hasDetectedActivity).toBe(true);
     expect(useTerminalStore.getState().sessions["pane"].isPossiblyDone).toBe(false);
     expect(useTerminalStore.getState().sessions["pane"].isLongInactive).toBe(false);
+  });
+
+  it("clears brown tab status immediately for a tab-root session when a child pane gets real output", () => {
+    useTerminalStore.getState().addSession("tab-root", "A");
+    useTerminalStore.getState().addSession("pane", "A");
+    useLayoutStore.getState().initLayout("tab-root", "pane");
+
+    useTerminalStore.getState().setDetectedActivity("tab-root", true);
+    useTerminalStore.getState().setPossiblyDone("tab-root", true);
+    useTerminalStore.getState().setLongInactive("tab-root", true);
+    useTerminalStore.getState().setDetectedActivity("pane", true);
+    useTerminalStore.getState().setPossiblyDone("pane", true);
+    useTerminalStore.getState().setLongInactive("pane", true);
+
+    queueTerminalOutput("pane", "still running\n");
+
+    expect(useTerminalStore.getState().sessions["tab-root"].isPossiblyDone).toBe(false);
+    expect(useTerminalStore.getState().sessions["tab-root"].isLongInactive).toBe(false);
+    expect(useTerminalStore.getState().sessions["tab-root"].hasDetectedActivity).toBe(true);
+    expect(useTerminalStore.getState().sessions["pane"].isPossiblyDone).toBe(false);
+    expect(useTerminalStore.getState().sessions["pane"].isLongInactive).toBe(false);
+    expect(useTerminalStore.getState().sessions["pane"].lastOutputAt).toBeGreaterThan(0);
+  });
+
+  it("does not clear brown tab status for tmux focus tracking output", () => {
+    useTerminalStore.getState().addSession("tab-root", "A");
+    useTerminalStore.getState().addSession("pane", "A");
+    useLayoutStore.getState().initLayout("tab-root", "pane");
+
+    useTerminalStore.getState().setDetectedActivity("tab-root", true);
+    useTerminalStore.getState().setPossiblyDone("tab-root", true);
+    useTerminalStore.getState().setLongInactive("tab-root", true);
+    useTerminalStore.getState().setDetectedActivity("pane", true);
+    useTerminalStore.getState().setPossiblyDone("pane", true);
+    useTerminalStore.getState().setLongInactive("pane", true);
+
+    queueTerminalOutput("pane", "\u001b[I");
+
+    expect(useTerminalStore.getState().sessions["tab-root"].isPossiblyDone).toBe(true);
+    expect(useTerminalStore.getState().sessions["tab-root"].isLongInactive).toBe(true);
+    expect(useTerminalStore.getState().sessions["pane"].isPossiblyDone).toBe(true);
+    expect(useTerminalStore.getState().sessions["pane"].isLongInactive).toBe(true);
+    expect(useTerminalStore.getState().sessions["pane"].lastOutputAt).toBe(0);
   });
 });
