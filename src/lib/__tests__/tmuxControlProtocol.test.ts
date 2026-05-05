@@ -42,11 +42,12 @@ describe("tmuxControlProtocol", () => {
       cursorX: 0,
       cursorY: 0,
       alternateOn: false,
+      historySize: 0,
     });
   });
 
   it("parses tmux pane snapshots with cursor and alternate-screen metadata", () => {
-    expect(parseTmuxPaneSnapshot("@1\t%3\t0\t12\t80\t24\t1\t/tmp/project\t5\t9\t1")).toEqual({
+    expect(parseTmuxPaneSnapshot("@1\t%3\t0\t12\t80\t24\t1\t/tmp/project\t5\t9\t1\t123")).toEqual({
       windowId: "@1",
       paneId: "%3",
       left: 0,
@@ -58,6 +59,7 @@ describe("tmuxControlProtocol", () => {
       cursorX: 5,
       cursorY: 9,
       alternateOn: true,
+      historySize: 123,
     });
   });
 
@@ -81,12 +83,18 @@ describe("tmuxControlProtocol", () => {
       'display-message -p -t @24 "#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}"'
     );
     expect(buildTmuxPaneSnapshotCommand({ allWindows: true })).toBe(
-      'list-panes -a -F "#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}"'
+      'list-panes -a -F "#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}\\t#{history_size}"'
     );
     expect(buildTmuxPaneSnapshotCommand({ targetWindowId: "@24" })).toBe(
-      'list-panes -t @24 -F "#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}"'
+      'list-panes -t @24 -F "#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}\\t#{history_size}"'
     );
-    expect(buildTmuxPaneCaptureCommand({ paneId: "%3" })).toBe("capture-pane -p -e -C -S - -t %3");
+    expect(buildTmuxPaneCaptureCommand({ paneId: "%3" })).toBe("capture-pane -p -e -C -S -1000000 -t %3");
+    expect(buildTmuxPaneCaptureCommand({ paneId: "%3", historySize: 42 })).toBe(
+      "capture-pane -p -e -C -S -42 -t %3"
+    );
+    expect(buildTmuxPaneCaptureCommand({ paneId: "%3", historySize: 0 })).toBe(
+      "capture-pane -p -e -C -t %3"
+    );
     expect(buildTmuxPaneCaptureCommand({ paneId: "%3", includeHistory: false })).toBe(
       "capture-pane -p -e -C -t %3"
     );

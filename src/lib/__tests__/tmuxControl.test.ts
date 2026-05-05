@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   focusTerminalInstanceMock,
+  queueTerminalOutputMock,
   writeTerminalMock,
 } = vi.hoisted(() => ({
   focusTerminalInstanceMock: vi.fn(),
+  queueTerminalOutputMock: vi.fn(),
   writeTerminalMock: vi.fn(async () => {}),
 }));
 
@@ -19,7 +21,7 @@ vi.mock("../../hooks/useTerminalBridge", () => ({
   focusTerminalInstance: focusTerminalInstanceMock,
   getTerminalCellSize: vi.fn(() => ({ width: 8, height: 16 })),
   getTerminalViewportSize: vi.fn(() => ({ width: 640, height: 384 })),
-  queueTerminalOutput: vi.fn(),
+  queueTerminalOutput: queueTerminalOutputMock,
   syncTerminalFrontendSize: vi.fn(),
 }));
 
@@ -192,6 +194,7 @@ describe("tmuxControl", () => {
     vi.useFakeTimers();
     writeTerminalMock.mockClear();
     focusTerminalInstanceMock.mockClear();
+    queueTerminalOutputMock.mockClear();
     resetTmuxRuntime();
   });
 
@@ -288,6 +291,73 @@ describe("tmuxControl", () => {
       tmuxPaneId: "%1",
       cwd: "/home/bobren",
     });
+  });
+
+  it("restores tmux history with autowrap disabled and redraws the visible screen", async () => {
+    const transportTerminalId = "transport-history-redraw";
+    seedTransportTerminal(transportTerminalId);
+
+    routeTmuxTransportOutput(transportTerminalId, TMUX_CONTROL_START);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.runOnlyPendingTimersAsync();
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 1 0",
+        "@1\thappy\t1\t*",
+        "%end 1 0",
+        "%begin 2 0",
+        "@1\t%1\t0\t0\t80\t24\t1\t/home/bobren\t2\t3\t0\t3",
+        "%end 2 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(writeTerminalMock).toHaveBeenLastCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -S -3 -t %1\n"
+    );
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 3 0",
+        "history row",
+        "full screen row",
+        "%end 3 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(writeTerminalMock).toHaveBeenLastCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 4 0",
+        "visible screen row",
+        "%end 4 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jhistory row\r\nfull screen row\u001b[H\u001b[2Jvisible screen row\u001b[?7h\u001b[0m\u001b[4;3H"
+    );
   });
 
   it("inserts Cmd+T tmux windows immediately after the focused tmux window", async () => {

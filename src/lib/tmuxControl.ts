@@ -87,6 +87,7 @@ interface TmuxPaneState {
   cursorX: number;
   cursorY: number;
   alternateOn: boolean;
+  historySize: number;
   initialContentCaptured: boolean;
 }
 
@@ -367,6 +368,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       cursorX: 0,
       cursorY: 0,
       alternateOn: false,
+      historySize: 0,
       initialContentCaptured: false,
     });
     paneTerminalToSessionId.set(session.id, sessionId);
@@ -1060,6 +1062,7 @@ function upsertWindowProjection(
         cursorX: paneSnapshot.cursorX,
         cursorY: paneSnapshot.cursorY,
         alternateOn: paneSnapshot.alternateOn,
+        historySize: paneSnapshot.historySize,
         initialContentCaptured: false,
       };
       session.panes.set(paneSnapshot.paneId, paneState);
@@ -1119,6 +1122,7 @@ function upsertWindowProjection(
     paneState.cursorX = paneSnapshot.cursorX;
     paneState.cursorY = paneSnapshot.cursorY;
     paneState.alternateOn = paneSnapshot.alternateOn;
+    paneState.historySize = paneSnapshot.historySize;
 
     useTerminalStore.getState().patchSession(paneState.terminalId, {
       title: snapshot.title,
@@ -1270,6 +1274,7 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
     paneId: pane.paneId,
     terminalId: pane.terminalId,
     alternateOn: pane.alternateOn,
+    historySize: pane.historySize,
     cursorX: pane.cursorX,
     cursorY: pane.cursorY,
   });
@@ -1280,8 +1285,18 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
       buildTmuxPaneCaptureCommand({
         paneId: pane.paneId,
         alternateScreen: pane.alternateOn,
+        historySize: pane.historySize,
       })
     );
+    const screenLines = !pane.alternateOn && pane.historySize > 0
+      ? await sendCommand(
+        session,
+        buildTmuxPaneCaptureCommand({
+          paneId: pane.paneId,
+          includeHistory: false,
+        })
+      )
+      : lines;
     const currentPane = session.panes.get(pane.paneId);
     const terminal = getTerminalSession(pane.terminalId);
     if (currentPane?.terminalId !== pane.terminalId || !terminal) {
@@ -1297,15 +1312,20 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
     const cursorRow = Math.max(1, Math.floor(pane.cursorY) + 1);
     const cursorCol = Math.max(1, Math.floor(pane.cursorX) + 1);
     const content = unescapeTmuxOutput(lines.join("\r\n"));
+    const screenContent = unescapeTmuxOutput(screenLines.join("\r\n"));
+    const redrawScreen = screenLines !== lines
+      ? `\u001b[H\u001b[2J${screenContent}`
+      : "";
     queueTerminalOutput(
       pane.terminalId,
-      `\u001b[0m\u001b[H\u001b[2J\u001b[3J${content}\u001b[0m\u001b[${cursorRow};${cursorCol}H`
+      `\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3J${content}${redrawScreen}\u001b[?7h\u001b[0m\u001b[${cursorRow};${cursorCol}H`
     );
     debugLog("tmux.capture", "initial pane content complete", {
       sessionId: session.id,
       paneId: pane.paneId,
       terminalId: pane.terminalId,
       lines: lines.length,
+      screenLines: screenLines.length,
     });
   } catch (error) {
     pane.initialContentCaptured = false;

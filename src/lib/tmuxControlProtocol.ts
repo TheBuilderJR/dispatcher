@@ -2,7 +2,8 @@ export const TMUX_CONTROL_START = "\u001bP1000p";
 export const TMUX_CONTROL_END = "\u001b\\";
 const TMUX_WINDOW_SNAPSHOT_FORMAT = '"#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}"';
 const TMUX_PANE_SNAPSHOT_FORMAT =
-  '"#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}"';
+  '"#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}\\t#{history_size}"';
+const TMUX_CAPTURE_HISTORY_FALLBACK_LINES = 1_000_000;
 
 export interface TmuxWindowSnapshot {
   windowId: string;
@@ -23,6 +24,7 @@ export interface TmuxPaneSnapshot {
   cursorX: number;
   cursorY: number;
   alternateOn: boolean;
+  historySize: number;
 }
 
 export function buildTmuxWindowSnapshotCommand(targetWindowId?: string): string {
@@ -50,12 +52,17 @@ export function buildTmuxPaneCaptureCommand(options: {
   paneId: string;
   alternateScreen?: boolean;
   includeHistory?: boolean;
+  historySize?: number;
 }): string {
   const flags = ["-p", "-e", "-C"];
   if (options.alternateScreen) {
     flags.push("-a", "-q");
   } else if (options.includeHistory !== false) {
-    flags.push("-S", "-");
+    const historySize = options.historySize ?? TMUX_CAPTURE_HISTORY_FALLBACK_LINES;
+    const boundedHistorySize = Math.max(0, Math.min(TMUX_CAPTURE_HISTORY_FALLBACK_LINES, Math.floor(historySize)));
+    if (boundedHistorySize > 0) {
+      flags.push("-S", `-${boundedHistorySize}`);
+    }
   }
   return `capture-pane ${flags.join(" ")} -t ${options.paneId}`;
 }
@@ -150,6 +157,7 @@ export function parseTmuxPaneSnapshot(line: string): TmuxPaneSnapshot | null {
     cursorX = "0",
     cursorY = "0",
     alternateOn = "0",
+    historySize = "0",
   ] = line.split("\t");
   if (!windowId || !paneId || left === undefined || top === undefined || width === undefined || height === undefined || activeFlag === undefined) {
     return null;
@@ -161,7 +169,8 @@ export function parseTmuxPaneSnapshot(line: string): TmuxPaneSnapshot | null {
   const parsedHeight = Number(height);
   const parsedCursorX = Number(cursorX);
   const parsedCursorY = Number(cursorY);
-  if (![parsedLeft, parsedTop, parsedWidth, parsedHeight, parsedCursorX, parsedCursorY].every(Number.isFinite)) {
+  const parsedHistorySize = Number(historySize);
+  if (![parsedLeft, parsedTop, parsedWidth, parsedHeight, parsedCursorX, parsedCursorY, parsedHistorySize].every(Number.isFinite)) {
     return null;
   }
 
@@ -177,6 +186,7 @@ export function parseTmuxPaneSnapshot(line: string): TmuxPaneSnapshot | null {
     cursorX: parsedCursorX,
     cursorY: parsedCursorY,
     alternateOn: alternateOn === "1",
+    historySize: Math.max(0, Math.floor(parsedHistorySize)),
   };
 }
 
