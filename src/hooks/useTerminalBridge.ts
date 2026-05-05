@@ -119,6 +119,8 @@ const PARKING_ROOT_ID = "dispatcher-terminal-parking-root";
 const writeBuffers = terminalBridgeRuntime.writeBuffers;
 const writeRafs = terminalBridgeRuntime.writeRafs;
 const writeStatusRecorded = terminalBridgeRuntime.writeStatusRecorded;
+const TERMINAL_RESPONSE_QUERY_PATTERN =
+  /\x1b(?:\[(?:\??6n|>c|c)|\](?:(?:1[0-2])|4;\d+);\?(?:\x07|\x1b\\))/;
 
 const WEBGL_OPT_IN_STORAGE_KEY = "dispatcher.webgl.enabled";
 
@@ -178,6 +180,28 @@ function persistWebglEnabled(enabled: boolean) {
   }
 }
 
+function containsTerminalResponseQuery(data: string): boolean {
+  return TERMINAL_RESPONSE_QUERY_PATTERN.test(data);
+}
+
+function flushBufferedWrite(terminalId: string) {
+  const rafId = writeRafs.get(terminalId);
+  if (rafId !== undefined) {
+    cancelAnimationFrame(rafId);
+    writeRafs.delete(terminalId);
+  }
+
+  writeStatusRecorded.delete(terminalId);
+  const buf = writeBuffers.get(terminalId);
+  if (!buf || buf.length === 0) {
+    return;
+  }
+
+  const combined = buf.join("");
+  buf.length = 0;
+  instances.get(terminalId)?.xterm.write(combined);
+}
+
 function batchedWrite(terminalId: string, data: string) {
   let buffer = writeBuffers.get(terminalId);
   if (!buffer) {
@@ -194,6 +218,11 @@ function batchedWrite(terminalId: string, data: string) {
     writeStatusRecorded.add(terminalId);
     useTerminalStore.getState().markTerminalOutput(terminalId);
     reflectImmediateTabOutput(terminalId);
+  }
+
+  if (data.includes("\u001b") && containsTerminalResponseQuery(buffer.join(""))) {
+    flushBufferedWrite(terminalId);
+    return;
   }
 
   if (!writeRafs.has(terminalId)) {

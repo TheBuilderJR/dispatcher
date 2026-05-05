@@ -118,6 +118,7 @@ interface TmuxControlSession {
   pendingNewWindowActivations: Map<string, string>;
   windowSizes: Map<string, string>;
   pendingWindowRedraws: Set<string>;
+  userPaneResizeLocks: Map<string, number>;
   outputLogCount: number;
   outputLogSuppressed: boolean;
   needsBootstrapRefresh: boolean;
@@ -177,6 +178,7 @@ const transportTerminalToSessionId = tmuxRuntime.transportTerminalToSessionId;
 const transportRawCarry = tmuxRuntime.transportRawCarry;
 const TMUX_OUTPUT_LOG_LIMIT = 25;
 const TMUX_BOOTSTRAP_FALLBACK_DELAY_MS = 100;
+const TMUX_USER_PANE_RESIZE_LOCK_MS = 4_000;
 const TMUX_CONTROL_LINE_PREFIXES = [
   "%begin",
   "%client-",
@@ -303,6 +305,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     pendingNewWindowActivations: new Map(),
     windowSizes: new Map(),
     pendingWindowRedraws: new Set(),
+    userPaneResizeLocks: new Map(),
     outputLogCount: 0,
     outputLogSuppressed: false,
     needsBootstrapRefresh: false,
@@ -489,6 +492,61 @@ function setLayout(layoutId: string, layout: LayoutNode) {
       [layoutId]: layout,
     },
   }));
+}
+
+function lockTmuxWindowForUserPaneResize(
+  session: TmuxControlSession,
+  windowId: string,
+  reason: string
+) {
+  const expiresAt = Date.now() + TMUX_USER_PANE_RESIZE_LOCK_MS;
+  const previousExpiresAt = session.userPaneResizeLocks.get(windowId) ?? 0;
+  session.userPaneResizeLocks.set(windowId, Math.max(previousExpiresAt, expiresAt));
+  debugLog("tmux.resize", "user pane resize lock", {
+    sessionId: session.id,
+    windowId,
+    reason,
+    previousExpiresAt,
+    expiresAt: session.userPaneResizeLocks.get(windowId),
+  });
+}
+
+function clearTmuxWindowUserPaneResizeLock(
+  session: TmuxControlSession,
+  windowId: string,
+  reason: string
+) {
+  if (!session.userPaneResizeLocks.delete(windowId)) {
+    return;
+  }
+
+  debugLog("tmux.resize", "user pane resize unlock", {
+    sessionId: session.id,
+    windowId,
+    reason,
+  });
+}
+
+function isTmuxWindowUserPaneResizeLocked(
+  session: TmuxControlSession,
+  windowId: string
+): boolean {
+  const expiresAt = session.userPaneResizeLocks.get(windowId) ?? 0;
+  if (expiresAt === 0) {
+    return false;
+  }
+
+  if (expiresAt <= Date.now()) {
+    session.userPaneResizeLocks.delete(windowId);
+    debugLog("tmux.resize", "user pane resize lock expired", {
+      sessionId: session.id,
+      windowId,
+      expiresAt,
+    });
+    return false;
+  }
+
+  return true;
 }
 
 function findDisconnectedWindowPlaceholder(
@@ -816,6 +874,7 @@ function removeWindowProjection(session: TmuxControlSession, windowId: string) {
   session.windowOrder = session.windowOrder.filter((id) => id !== windowId);
   session.pendingNewWindowActivations.delete(windowId);
   session.pendingWindowRedraws.delete(windowId);
+  session.userPaneResizeLocks.delete(windowId);
 
   const activeTerminalId = useTerminalStore.getState().activeTerminalId;
   if (activeTerminalId && (activeTerminalId === window.terminalId || paneTerminalIds.includes(activeTerminalId))) {
@@ -853,6 +912,7 @@ function detachControlSessionProjections(session: TmuxControlSession, reason: st
   });
 
   session.pendingWindowRedraws.clear();
+  session.userPaneResizeLocks.clear();
 
   for (const pane of session.panes.values()) {
     paneTerminalToSessionId.delete(pane.terminalId);
@@ -949,7 +1009,10 @@ function removeOrphanedTmuxWindowPlaceholders(session: TmuxControlSession, windo
 function upsertWindowProjection(
   session: TmuxControlSession,
   snapshot: TmuxWindowSnapshot,
-  panes: readonly TmuxPaneSnapshot[]
+  panes: readonly TmuxPaneSnapshot[],
+  options?: {
+    preserveLayout?: boolean;
+  }
 ) {
   if (panes.length === 0) {
     debugLog("tmux.session", "skip window projection with no panes", {
@@ -1182,6 +1245,16 @@ function upsertWindowProjection(
       disposeTerminalInstance(terminalId);
       useTerminalStore.getState().removeSession(terminalId);
     }
+  }
+
+  if (options?.preserveLayout) {
+    debugLog("tmux.resize", "preserve user pane layout during tmux refresh", {
+      sessionId: session.id,
+      windowId: snapshot.windowId,
+      terminalId: windowState.terminalId,
+      panes: layoutPanes.length,
+    });
+    return;
   }
 
   setLayout(windowState.terminalId, buildLayoutFromTmuxPanes(layoutPanes));
@@ -1436,7 +1509,10 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
     return;
   }
 
-  upsertWindowProjection(session, snapshot, paneSnapshots);
+  const preserveUserPaneLayout = isTmuxWindowUserPaneResizeLocked(session, snapshot.windowId);
+  upsertWindowProjection(session, snapshot, paneSnapshots, {
+    preserveLayout: preserveUserPaneLayout,
+  });
   syncWindowNodeOrder(session);
 
   if (session.pendingWindowRedraws.delete(snapshot.windowId)) {
@@ -2078,6 +2154,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     pendingNewWindowActivations: new Map(),
     windowSizes: new Map(),
     pendingWindowRedraws: new Set(),
+    userPaneResizeLocks: new Map(),
     outputLogCount: 0,
     outputLogSuppressed: false,
     needsBootstrapRefresh: true,
@@ -2498,6 +2575,17 @@ export function syncTmuxWindowSize(layoutId: string, widthPx: number, heightPx: 
     return false;
   }
 
+  if (isTmuxWindowUserPaneResizeLocked(session, windowState.windowId)) {
+    debugLog("tmux.size", "skip window size sync during user pane resize", {
+      layoutId,
+      sessionId: session.id,
+      windowId: windowState.windowId,
+      widthPx,
+      heightPx,
+    });
+    return false;
+  }
+
   const activePaneTerminalId = session.panes.get(windowState.activePaneId)?.terminalId;
   if (!activePaneTerminalId) {
     return false;
@@ -2554,6 +2642,16 @@ export function syncTmuxWindowSizeFromPaneTerminal(terminalId: string): boolean 
   const session = pane ? getControlSessionForTerminal(terminalId) : null;
   const windowState = pane && session ? session.windows.get(pane.windowId) ?? null : null;
   if (!pane || !session || !windowState) {
+    return false;
+  }
+
+  if (isTmuxWindowUserPaneResizeLocked(session, pane.windowId)) {
+    debugLog("tmux.size", "skip pane viewport sync during user pane resize", {
+      terminalId,
+      sessionId: session.id,
+      windowId: pane.windowId,
+      paneId: pane.paneId,
+    });
     return false;
   }
 
@@ -2635,6 +2733,17 @@ export function getTmuxLayoutKeyForTerminal(terminalId: string): string | null {
   return findLayoutKeyForTerminal(layouts, terminalId);
 }
 
+export function beginTmuxPaneResizeByTerminal(terminalId: string): boolean {
+  const pane = getTmuxPaneStateByTerminal(terminalId);
+  const session = pane ? getControlSessionForTerminal(terminalId) : null;
+  if (!pane || !session) {
+    return false;
+  }
+
+  lockTmuxWindowForUserPaneResize(session, pane.windowId, "drag-start");
+  return true;
+}
+
 export function resizeTmuxPaneByTerminal(
   terminalId: string,
   direction: "horizontal" | "vertical",
@@ -2642,10 +2751,16 @@ export function resizeTmuxPaneByTerminal(
 ): boolean {
   const pane = getTmuxPaneStateByTerminal(terminalId);
   const session = pane ? getControlSessionForTerminal(terminalId) : null;
-  if (!pane || !session || delta === 0) {
+  if (!pane || !session) {
     return false;
   }
 
+  if (delta === 0) {
+    clearTmuxWindowUserPaneResizeLock(session, pane.windowId, "drag-end-noop");
+    return false;
+  }
+
+  lockTmuxWindowForUserPaneResize(session, pane.windowId, "resize-pane-command");
   const absDelta = Math.abs(delta);
   let flag: string;
   if (direction === "horizontal") {
@@ -2662,9 +2777,16 @@ export function resizeTmuxPaneByTerminal(
     delta,
     flag,
   });
-  void sendCommand(session, `resize-pane -t ${pane.paneId} ${flag} ${absDelta}`).catch((error) => {
-    debugLogError("tmux.action", "resize-pane failed", error);
-  });
+  void sendCommand(session, `resize-pane -t ${pane.paneId} ${flag} ${absDelta}`)
+    .then(() => {
+      clearTmuxWindowUserPaneResizeLock(session, pane.windowId, "resize-pane-complete");
+      scheduleRefresh(session, pane.windowId);
+    })
+    .catch((error) => {
+      clearTmuxWindowUserPaneResizeLock(session, pane.windowId, "resize-pane-failed");
+      scheduleRefresh(session, pane.windowId);
+      debugLogError("tmux.action", "resize-pane failed", error);
+    });
   return true;
 }
 

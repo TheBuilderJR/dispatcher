@@ -16,6 +16,7 @@ const {
   appendDebugLogMock: vi.fn(async () => {}),
   createdTerminals: [] as Array<{
     scrollToBottom: ReturnType<typeof vi.fn>;
+    write: ReturnType<typeof vi.fn>;
     resize: ReturnType<typeof vi.fn>;
     cols: number;
     rows: number;
@@ -161,6 +162,7 @@ describe("useTerminalBridge synthetic input", () => {
   afterEach(() => {
     disposeTerminalInstance("term-scroll-test");
     disposeTerminalInstance("tmux-pane-test");
+    disposeTerminalInstance("term-query-test");
     disposeTerminalInstance("tab-root");
     disposeTerminalInstance("pane");
   });
@@ -265,5 +267,14 @@ describe("useTerminalBridge synthetic input", () => {
     expect(useTerminalStore.getState().sessions["pane"].isPossiblyDone).toBe(true);
     expect(useTerminalStore.getState().sessions["pane"].isLongInactive).toBe(true);
     expect(useTerminalStore.getState().sessions["pane"].lastOutputAt).toBe(0);
+  });
+
+  it("flushes terminal response queries to xterm immediately", () => {
+    ensureTerminalScreenshotTarget("term-query-test");
+    expect(createdTerminals).toHaveLength(1);
+
+    queueTerminalOutput("term-query-test", "\u001b]11;?\u001b\\\u001b[6n");
+
+    expect(createdTerminals[0].write).toHaveBeenCalledWith("\u001b]11;?\u001b\\\u001b[6n");
   });
 });

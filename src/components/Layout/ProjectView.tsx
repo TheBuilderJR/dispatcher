@@ -6,6 +6,7 @@ import { DetailPanel } from "../Terminal/DetailPanel";
 import { SplitContainer } from "./SplitContainer";
 import { useResizeObserver } from "../../hooks/useResizeObserver";
 import {
+  beginTmuxPaneResizeByTerminal,
   isDisconnectedTmuxPlaceholderTerminal,
   isTmuxWindowTerminal,
   resizeTmuxPaneByTerminal,
@@ -86,19 +87,24 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
   const isTmuxLayout = isTmuxWindowTerminal(layoutId);
 
   const handleTmuxPaneDragEnd = useCallback(
-    (terminalId: string, direction: "horizontal" | "vertical", ratio: number, oldRatio: number) => {
+    (
+      terminalId: string,
+      direction: "horizontal" | "vertical",
+      ratio: number,
+      oldRatio: number,
+      containerPx: number
+    ) => {
       const cellSize = getTerminalCellSize(terminalId);
-      const element = terminalCanvasRef.current;
-      if (!cellSize || !element) return;
+      if (!cellSize) {
+        resizeTmuxPaneByTerminal(terminalId, direction, 0);
+        return;
+      }
 
-      const containerPx = direction === "horizontal" ? element.clientWidth : element.clientHeight;
       const cellPx = direction === "horizontal" ? cellSize.width : cellSize.height;
       const deltaCells = Math.round(((ratio - oldRatio) * containerPx) / cellPx);
-      if (deltaCells !== 0) {
-        resizeTmuxPaneByTerminal(terminalId, direction, deltaCells);
-      }
+      resizeTmuxPaneByTerminal(terminalId, direction, deltaCells);
     },
-    [terminalCanvasRef]
+    []
   );
 
   useEffect(() => {
@@ -162,6 +168,7 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
             layoutId={layoutId}
             onSplit={onSplitPane}
             onClose={onClosePane}
+            onTmuxPaneDragStart={isTmuxLayout ? beginTmuxPaneResizeByTerminal : undefined}
             onTmuxPaneDragEnd={isTmuxLayout ? handleTmuxPaneDragEnd : undefined}
           />
         )}

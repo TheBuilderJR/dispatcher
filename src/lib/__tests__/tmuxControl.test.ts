@@ -31,7 +31,9 @@ import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { TMUX_CONTROL_END, TMUX_CONTROL_START } from "../tmuxControlProtocol";
 import {
+  beginTmuxPaneResizeByTerminal,
   createTmuxWindowForTerminal,
+  resizeTmuxPaneByTerminal,
   routeTmuxTransportOutput,
   syncTmuxWindowSizeFromPaneTerminal,
 } from "../tmuxControl";
@@ -153,6 +155,44 @@ async function hydrateTwoWindows(transportTerminalId: string) {
       "",
     ].join("\n")
   );
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+async function hydrateSplitWindow(transportTerminalId: string) {
+  routeTmuxTransportOutput(transportTerminalId, TMUX_CONTROL_START);
+  await vi.runOnlyPendingTimersAsync();
+  await vi.runOnlyPendingTimersAsync();
+
+  routeTmuxTransportOutput(
+    transportTerminalId,
+    [
+      "%begin 1 0",
+      "@1\thappy\t1\t*",
+      "%end 1 0",
+      "%begin 2 0",
+      "@1\t%1\t0\t0\t40\t24\t1\t/Users/bobren/left\t4\t7\t0\t0",
+      "@1\t%2\t40\t0\t40\t24\t0\t/Users/bobren/right\t1\t2\t0\t0",
+      "%end 2 0",
+      "",
+    ].join("\n")
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  routeTmuxTransportOutput(
+    transportTerminalId,
+    [
+      "%begin 3 0",
+      "left screen",
+      "%end 3 0",
+      "%begin 4 0",
+      "right screen",
+      "%end 4 0",
+      "",
+    ].join("\n")
+  );
+  await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
 }
@@ -400,6 +440,8 @@ describe("tmuxControl", () => {
       ].join("\n")
     );
     await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
     await vi.runOnlyPendingTimersAsync();
     routeTmuxTransportOutput(
       transportTerminalId,
@@ -439,6 +481,91 @@ describe("tmuxControl", () => {
     );
 
     expect(syncTmuxWindowSizeFromPaneTerminal(paneTerminalId)).toBe(false);
+  });
+
+  it("keeps user tmux split drag layout until resize-pane settles", async () => {
+    const transportTerminalId = "transport-user-resize-lock";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSplitWindow(transportTerminalId);
+    writeTerminalMock.mockClear();
+
+    const windowTerminalId = getWindowTerminalIdByWindowId("@1");
+    const leftPaneTerminalId = getPaneTerminalIdByPaneId("%1");
+    const initialLayout = useLayoutStore.getState().layouts[windowTerminalId];
+    expect(initialLayout?.type).toBe("split");
+    if (!initialLayout || initialLayout.type !== "split") {
+      return;
+    }
+
+    beginTmuxPaneResizeByTerminal(leftPaneTerminalId);
+    useLayoutStore.getState().setRatio(windowTerminalId, initialLayout.id, 0.75);
+    expect(syncTmuxWindowSizeFromPaneTerminal(leftPaneTerminalId)).toBe(false);
+    expect(writeTerminalMock).not.toHaveBeenCalledWith(
+      transportTerminalId,
+      "refresh-client -C 80x24\n"
+    );
+
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @1\n");
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 5 0",
+        "@1\thappy\t1\t*",
+        "%end 5 0",
+        "%begin 6 0",
+        "@1\t%1\t0\t0\t40\t24\t1\t/Users/bobren/left\t4\t7\t0\t0",
+        "@1\t%2\t40\t0\t40\t24\t0\t/Users/bobren/right\t1\t2\t0\t0",
+        "%end 6 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const lockedLayout = useLayoutStore.getState().layouts[windowTerminalId];
+    expect(lockedLayout?.type === "split" && lockedLayout.ratio).toBe(0.75);
+
+    expect(resizeTmuxPaneByTerminal(leftPaneTerminalId, "horizontal", 10)).toBe(true);
+    expect(writeTerminalMock).toHaveBeenLastCalledWith(
+      transportTerminalId,
+      "resize-pane -t %1 -R 10\n"
+    );
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 7 0",
+        "%end 7 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 8 0",
+        "@1\thappy\t1\t*",
+        "%end 8 0",
+        "%begin 9 0",
+        "@1\t%1\t0\t0\t50\t24\t1\t/Users/bobren/left\t4\t7\t0\t0",
+        "@1\t%2\t50\t0\t30\t24\t0\t/Users/bobren/right\t1\t2\t0\t0",
+        "%end 9 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const settledLayout = useLayoutStore.getState().layouts[windowTerminalId];
+    expect(settledLayout?.type).toBe("split");
+    if (!settledLayout || settledLayout.type !== "split") {
+      return;
+    }
+    expect(settledLayout.ratio).toBeCloseTo(0.625);
   });
 
   it("inserts Cmd+T tmux windows immediately after the focused tmux window", async () => {

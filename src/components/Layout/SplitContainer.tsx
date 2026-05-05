@@ -13,7 +13,14 @@ interface SplitContainerProps {
   layoutId: string;
   onSplit?: (terminalId: string, direction: "horizontal" | "vertical") => void;
   onClose?: (terminalId: string) => void;
-  onTmuxPaneDragEnd?: (terminalId: string, direction: "horizontal" | "vertical", ratio: number, oldRatio: number) => void;
+  onTmuxPaneDragStart?: (terminalId: string) => void;
+  onTmuxPaneDragEnd?: (
+    terminalId: string,
+    direction: "horizontal" | "vertical",
+    ratio: number,
+    oldRatio: number,
+    containerPx: number
+  ) => void;
 }
 
 export function SplitContainer({
@@ -21,6 +28,7 @@ export function SplitContainer({
   layoutId,
   onSplit,
   onClose,
+  onTmuxPaneDragStart,
   onTmuxPaneDragEnd,
 }: SplitContainerProps) {
   const setRatio = useLayoutStore((s) => s.setRatio);
@@ -41,10 +49,18 @@ export function SplitContainer({
   const isHorizontal = direction === "horizontal";
 
   const handleDragEnd = onTmuxPaneDragEnd
-    ? (finalRatio: number) => {
+    ? (finalRatio: number, containerPx: number) => {
       const terminalId = findFirstLeafTerminalId(first);
       if (terminalId) {
-        onTmuxPaneDragEnd(terminalId, direction, finalRatio, ratio);
+        onTmuxPaneDragEnd(terminalId, direction, finalRatio, ratio, containerPx);
+      }
+    }
+    : undefined;
+  const handleDragStart = onTmuxPaneDragStart
+    ? () => {
+      const terminalId = findFirstLeafTerminalId(first);
+      if (terminalId) {
+        onTmuxPaneDragStart(terminalId);
       }
     }
     : undefined;
@@ -69,12 +85,14 @@ export function SplitContainer({
           layoutId={layoutId}
           onSplit={onSplit}
           onClose={onClose}
+          onTmuxPaneDragStart={onTmuxPaneDragStart}
           onTmuxPaneDragEnd={onTmuxPaneDragEnd}
         />
       </div>
       <SplitDivider
         direction={direction}
         onResize={(r) => setRatio(layoutId, node.id, r)}
+        onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       />
       <div
@@ -90,6 +108,7 @@ export function SplitContainer({
           layoutId={layoutId}
           onSplit={onSplit}
           onClose={onClose}
+          onTmuxPaneDragStart={onTmuxPaneDragStart}
           onTmuxPaneDragEnd={onTmuxPaneDragEnd}
         />
       </div>
