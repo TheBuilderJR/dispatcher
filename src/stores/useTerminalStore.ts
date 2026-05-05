@@ -119,7 +119,6 @@ export const useTerminalStore = create<TerminalStore>()(
                 ...session,
                 hasDetectedActivity: true,
                 lastOutputAt: Date.now(),
-                isPossiblyDone: false,
                 isLongInactive: false,
               },
             },

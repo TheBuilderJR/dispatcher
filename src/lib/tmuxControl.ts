@@ -117,6 +117,7 @@ interface TmuxControlSession {
   pendingNewWindowAnchors: PendingNewWindowAnchor[];
   pendingNewWindowActivations: Map<string, string>;
   windowSizes: Map<string, string>;
+  pendingWindowRedraws: Set<string>;
   outputLogCount: number;
   outputLogSuppressed: boolean;
   needsBootstrapRefresh: boolean;
@@ -301,6 +302,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     pendingNewWindowAnchors: [],
     pendingNewWindowActivations: new Map(),
     windowSizes: new Map(),
+    pendingWindowRedraws: new Set(),
     outputLogCount: 0,
     outputLogSuppressed: false,
     needsBootstrapRefresh: false,
@@ -813,6 +815,7 @@ function removeWindowProjection(session: TmuxControlSession, windowId: string) {
   session.windows.delete(windowId);
   session.windowOrder = session.windowOrder.filter((id) => id !== windowId);
   session.pendingNewWindowActivations.delete(windowId);
+  session.pendingWindowRedraws.delete(windowId);
 
   const activeTerminalId = useTerminalStore.getState().activeTerminalId;
   if (activeTerminalId && (activeTerminalId === window.terminalId || paneTerminalIds.includes(activeTerminalId))) {
@@ -848,6 +851,8 @@ function detachControlSessionProjections(session: TmuxControlSession, reason: st
     windows: session.windows.size,
     panes: session.panes.size,
   });
+
+  session.pendingWindowRedraws.clear();
 
   for (const pane of session.panes.values()) {
     paneTerminalToSessionId.delete(pane.terminalId);
@@ -1333,6 +1338,58 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
   }
 }
 
+async function redrawVisiblePaneContent(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  reason: string
+) {
+  debugLog("tmux.capture", "visible pane redraw start", {
+    sessionId: session.id,
+    paneId: pane.paneId,
+    terminalId: pane.terminalId,
+    reason,
+    alternateOn: pane.alternateOn,
+    cursorX: pane.cursorX,
+    cursorY: pane.cursorY,
+  });
+
+  const lines = await sendCommand(
+    session,
+    buildTmuxPaneCaptureCommand({
+      paneId: pane.paneId,
+      alternateScreen: pane.alternateOn,
+      includeHistory: false,
+    })
+  );
+  const currentPane = session.panes.get(pane.paneId);
+  const terminal = getTerminalSession(pane.terminalId);
+  if (currentPane?.terminalId !== pane.terminalId || !terminal) {
+    debugLog("tmux.capture", "visible pane redraw skipped for stale pane", {
+      sessionId: session.id,
+      paneId: pane.paneId,
+      terminalId: pane.terminalId,
+      reason,
+    });
+    return;
+  }
+
+  ensureTerminalFrontend(pane.terminalId);
+  const cursorRow = Math.max(1, Math.floor(currentPane.cursorY) + 1);
+  const cursorCol = Math.max(1, Math.floor(currentPane.cursorX) + 1);
+  const content = unescapeTmuxOutput(lines.join("\r\n"));
+  queueTerminalOutput(
+    pane.terminalId,
+    `\u001b[0m\u001b[?7l\u001b[H\u001b[2J${content}\u001b[?7h\u001b[0m\u001b[${cursorRow};${cursorCol}H`
+  );
+  debugLog("tmux.capture", "visible pane redraw complete", {
+    sessionId: session.id,
+    paneId: pane.paneId,
+    terminalId: pane.terminalId,
+    reason,
+    lines: lines.length,
+  });
+}
+
 async function refreshSingleWindow(session: TmuxControlSession, windowId: string) {
   debugLog("tmux.refresh", "refresh window start", {
     sessionId: session.id,
@@ -1381,6 +1438,17 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
 
   upsertWindowProjection(session, snapshot, paneSnapshots);
   syncWindowNodeOrder(session);
+
+  if (session.pendingWindowRedraws.delete(snapshot.windowId)) {
+    const paneStates = paneSnapshots
+      .map((paneSnapshot) => session.panes.get(paneSnapshot.paneId))
+      .filter((pane): pane is TmuxPaneState => Boolean(pane));
+    void Promise.all(
+      paneStates.map((pane) => redrawVisiblePaneContent(session, pane, "resize"))
+    ).catch((error) => {
+      debugLogError("tmux.capture", "resize pane redraw failed", error);
+    });
+  }
 
   const pendingActivationAnchorWindowId = session.pendingNewWindowActivations.get(snapshot.windowId) ?? null;
   const shouldActivateNewWindow = pendingActivationAnchorWindowId !== null;
@@ -2009,6 +2077,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     pendingNewWindowAnchors: [],
     pendingNewWindowActivations: new Map(),
     windowSizes: new Map(),
+    pendingWindowRedraws: new Set(),
     outputLogCount: 0,
     outputLogSuppressed: false,
     needsBootstrapRefresh: true,
@@ -2374,16 +2443,64 @@ export async function renameTmuxTerminal(terminalId: string, title: string): Pro
   return true;
 }
 
+function getTmuxWindowGridSize(session: TmuxControlSession, windowId: string) {
+  const panes = [...session.panes.values()].filter((pane) => pane.windowId === windowId);
+  return {
+    cols: Math.max(1, ...panes.map((pane) => pane.left + pane.width)),
+    rows: Math.max(1, ...panes.map((pane) => pane.top + pane.height)),
+  };
+}
+
+function applyTmuxWindowSize(
+  session: TmuxControlSession,
+  windowState: TmuxWindowState,
+  cols: number,
+  rows: number,
+  details: Record<string, unknown>
+): boolean {
+  const nextCols = Math.max(2, Math.floor(cols));
+  const nextRows = Math.max(1, Math.floor(rows));
+  if (!Number.isFinite(nextCols) || !Number.isFinite(nextRows)) {
+    return false;
+  }
+
+  const nextSize = `${nextCols}x${nextRows}`;
+  if (session.windowSizes.get(windowState.windowId) === nextSize) {
+    return false;
+  }
+
+  session.windowSizes.set(windowState.windowId, nextSize);
+  session.pendingWindowRedraws.add(windowState.windowId);
+  debugLog("tmux.size", "sync window size", {
+    sessionId: session.id,
+    windowId: windowState.windowId,
+    ...details,
+    size: nextSize,
+  });
+  void sendCommand(session, `refresh-client -C ${nextSize}`)
+    .then(() => {
+      scheduleRefresh(session, windowState.windowId);
+    })
+    .catch((error) => {
+      if (session.windowSizes.get(windowState.windowId) === nextSize) {
+        session.windowSizes.delete(windowState.windowId);
+      }
+      session.pendingWindowRedraws.delete(windowState.windowId);
+      debugLogError("tmux.size", "refresh-client failed", error);
+    });
+  return true;
+}
+
 export function syncTmuxWindowSize(layoutId: string, widthPx: number, heightPx: number) {
   const windowState = getTmuxWindowStateByTerminal(layoutId);
   const session = getControlSessionForTerminal(layoutId);
   if (!windowState || !session || !windowState.activePaneId) {
-    return;
+    return false;
   }
 
   const activePaneTerminalId = session.panes.get(windowState.activePaneId)?.terminalId;
   if (!activePaneTerminalId) {
-    return;
+    return false;
   }
 
   const cellSize = getTerminalCellSize(activePaneTerminalId);
@@ -2395,22 +2512,11 @@ export function syncTmuxWindowSize(layoutId: string, widthPx: number, heightPx: 
       widthPx,
       heightPx,
     });
-    return;
+    return false;
   }
 
   const activePane = session.panes.get(windowState.activePaneId) ?? null;
-  const totalWindowCols = Math.max(
-    1,
-    ...[...session.panes.values()]
-      .filter((pane) => pane.windowId === windowState.windowId)
-      .map((pane) => pane.left + pane.width)
-  );
-  const totalWindowRows = Math.max(
-    1,
-    ...[...session.panes.values()]
-      .filter((pane) => pane.windowId === windowState.windowId)
-      .map((pane) => pane.top + pane.height)
-  );
+  const totalWindowGrid = getTmuxWindowGridSize(session, windowState.windowId);
   const viewportSize = getTerminalViewportSize(activePaneTerminalId);
   const inferredWindowSize = activePane
     ? computeTmuxWindowSizeFromPaneViewport({
@@ -2420,22 +2526,14 @@ export function syncTmuxWindowSize(layoutId: string, widthPx: number, heightPx: 
       cellHeightPx: cellSize.height,
       activePaneCols: activePane.width,
       activePaneRows: activePane.height,
-      totalWindowCols,
-      totalWindowRows,
+      totalWindowCols: totalWindowGrid.cols,
+      totalWindowRows: totalWindowGrid.rows,
     })
     : null;
   const cols = inferredWindowSize?.cols ?? Math.max(2, Math.floor(widthPx / cellSize.width));
   const rows = inferredWindowSize?.rows ?? Math.max(1, Math.floor(heightPx / cellSize.height));
-  const nextSize = `${cols}x${rows}`;
-  if (session.windowSizes.get(windowState.windowId) === nextSize) {
-    return;
-  }
-
-  session.windowSizes.set(windowState.windowId, nextSize);
-  debugLog("tmux.size", "sync window size", {
+  return applyTmuxWindowSize(session, windowState, cols, rows, {
     layoutId,
-    sessionId: session.id,
-    windowId: windowState.windowId,
     activePaneTerminalId,
     widthPx,
     heightPx,
@@ -2445,18 +2543,61 @@ export function syncTmuxWindowSize(layoutId: string, widthPx: number, heightPx: 
     viewportHeightPx: viewportSize?.height ?? null,
     activePaneCols: activePane?.width ?? null,
     activePaneRows: activePane?.height ?? null,
-    totalWindowCols,
-    totalWindowRows,
+    totalWindowCols: totalWindowGrid.cols,
+    totalWindowRows: totalWindowGrid.rows,
     source: inferredWindowSize ? "pane-viewport" : "outer-canvas",
-    size: nextSize,
   });
-  void sendCommand(session, `refresh-client -C ${nextSize}`)
-    .then(() => {
-      scheduleRefresh(session, windowState.windowId);
-    })
-    .catch((error) => {
-      debugLogError("tmux.size", "refresh-client failed", error);
+}
+
+export function syncTmuxWindowSizeFromPaneTerminal(terminalId: string): boolean {
+  const pane = getTmuxPaneStateByTerminal(terminalId);
+  const session = pane ? getControlSessionForTerminal(terminalId) : null;
+  const windowState = pane && session ? session.windows.get(pane.windowId) ?? null : null;
+  if (!pane || !session || !windowState) {
+    return false;
+  }
+
+  const cellSize = getTerminalCellSize(terminalId);
+  const viewportSize = getTerminalViewportSize(terminalId);
+  if (!cellSize || !viewportSize || cellSize.width <= 0 || cellSize.height <= 0) {
+    debugLog("tmux.size", "missing pane viewport metrics", {
+      terminalId,
+      sessionId: session.id,
+      windowId: pane.windowId,
+      hasCellSize: Boolean(cellSize),
+      hasViewportSize: Boolean(viewportSize),
     });
+    return false;
+  }
+
+  const totalWindowGrid = getTmuxWindowGridSize(session, pane.windowId);
+  const inferredWindowSize = computeTmuxWindowSizeFromPaneViewport({
+    viewportWidthPx: viewportSize.width,
+    viewportHeightPx: viewportSize.height,
+    cellWidthPx: cellSize.width,
+    cellHeightPx: cellSize.height,
+    activePaneCols: pane.width,
+    activePaneRows: pane.height,
+    totalWindowCols: totalWindowGrid.cols,
+    totalWindowRows: totalWindowGrid.rows,
+  });
+  if (!inferredWindowSize) {
+    return false;
+  }
+
+  return applyTmuxWindowSize(session, windowState, inferredWindowSize.cols, inferredWindowSize.rows, {
+    terminalId,
+    paneId: pane.paneId,
+    viewportWidthPx: viewportSize.width,
+    viewportHeightPx: viewportSize.height,
+    cellWidth: cellSize.width,
+    cellHeight: cellSize.height,
+    activePaneCols: pane.width,
+    activePaneRows: pane.height,
+    totalWindowCols: totalWindowGrid.cols,
+    totalWindowRows: totalWindowGrid.rows,
+    source: "pane-resize-observer",
+  });
 }
 
 export function isTmuxTransportTerminal(terminalId: string): boolean {

@@ -13,7 +13,10 @@ import {
   getMacOptionMetaSequence,
   suppressMacCtrlChordTextInput,
 } from "../../lib/keyboardShortcuts";
-import { handleTmuxTerminalFocus } from "../../lib/tmuxControl";
+import {
+  handleTmuxTerminalFocus,
+  syncTmuxWindowSizeFromPaneTerminal,
+} from "../../lib/tmuxControl";
 import {
   describeInputLikeEvent,
   describeKeyboardEvent,
@@ -44,7 +47,13 @@ export function TerminalPane({
 
   const handleResize = useCallback(() => {
     fit();
-  }, [fit]);
+    if (syncTmuxWindowSizeFromPaneTerminal(terminalId)) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      syncTmuxWindowSizeFromPaneTerminal(terminalId);
+    });
+  }, [fit, terminalId]);
 
   const resizeRef = useResizeObserver(handleResize);
 

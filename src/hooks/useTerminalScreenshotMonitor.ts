@@ -212,10 +212,11 @@ export function useTerminalScreenshotMonitor() {
           const shouldKeepAttentionUntilFocus = latestSessions.some(
             (session) => session.isNeedsAttention
           );
-          const shouldKeepBrownUntilInput =
-            latestSessions.some((session) => session.isPossiblyDone)
-            && effectiveChangedAt <= acknowledgedTime;
-          const shouldRevertToGreen = changed && !shouldKeepAttentionUntilFocus;
+          const shouldKeepBrownUntilInput = latestSessions.some((session) => session.isPossiblyDone);
+          const shouldRevertToGreen =
+            changed
+            && !shouldKeepAttentionUntilFocus
+            && !shouldKeepBrownUntilInput;
           const nextNeedsAttention = shouldKeepAttentionUntilFocus
             ? true
             : shouldRevertToGreen

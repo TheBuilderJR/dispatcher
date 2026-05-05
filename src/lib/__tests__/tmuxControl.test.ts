@@ -30,7 +30,11 @@ import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { TMUX_CONTROL_END, TMUX_CONTROL_START } from "../tmuxControlProtocol";
-import { createTmuxWindowForTerminal, routeTmuxTransportOutput } from "../tmuxControl";
+import {
+  createTmuxWindowForTerminal,
+  routeTmuxTransportOutput,
+  syncTmuxWindowSizeFromPaneTerminal,
+} from "../tmuxControl";
 
 function makeTerminalSession(
   id: string,
@@ -358,6 +362,83 @@ describe("tmuxControl", () => {
       paneTerminalId,
       "\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jhistory row\r\nfull screen row\u001b[H\u001b[2Jvisible screen row\u001b[?7h\u001b[0m\u001b[4;3H"
     );
+  });
+
+  it("syncs tmux window size when a pane viewport resizes", async () => {
+    const transportTerminalId = "transport-pane-resize";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    await Promise.resolve();
+    await Promise.resolve();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 3 0",
+        "initial screen",
+        "%end 3 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    expect(syncTmuxWindowSizeFromPaneTerminal(paneTerminalId)).toBe(true);
+    expect(writeTerminalMock).toHaveBeenLastCalledWith(
+      transportTerminalId,
+      "refresh-client -C 80x24\n"
+    );
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 4 0",
+        "%end 4 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 5 0",
+        "@1\thappy\t1\t*",
+        "%end 5 0",
+        "%begin 6 0",
+        "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren\t4\t7\t0\t0",
+        "%end 6 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(writeTerminalMock).toHaveBeenLastCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 7 0",
+        "clean screen",
+        "%end 7 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jclean screen\u001b[?7h\u001b[0m\u001b[8;5H"
+    );
+
+    expect(syncTmuxWindowSizeFromPaneTerminal(paneTerminalId)).toBe(false);
   });
 
   it("inserts Cmd+T tmux windows immediately after the focused tmux window", async () => {
