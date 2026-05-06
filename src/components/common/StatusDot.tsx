@@ -12,7 +12,7 @@ export function StatusDot({ terminalId }: { terminalId: string }) {
   const backgroundColor = !hasDetectedActivity
       ? GRAY
       : isNeedsAttention
-        ? BROWN
+        ? GREEN
       : isLongInactive
         ? GRAY
       : isPossiblyDone

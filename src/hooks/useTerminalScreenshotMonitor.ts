@@ -122,7 +122,7 @@ function getStatusDotSemantic(args: {
     return "gray-idle";
   }
   if (args.nextNeedsAttention) {
-    return "brown-needs-attention";
+    return "green-needs-attention";
   }
   if (args.nextLongInactive) {
     return "gray-long-inactive";
@@ -442,6 +442,12 @@ export function useTerminalScreenshotMonitor() {
           const idleStartedAt = hasAcknowledgedCurrentOutput
             ? Math.max(effectiveChangedAt, acknowledgedTime)
             : effectiveChangedAt;
+          const isNeedsAttention =
+            hasDetectedActivity &&
+            !isActiveTab &&
+            !changed &&
+            !hasAcknowledgedCurrentOutput &&
+            now - effectiveChangedAt >= SCREENSHOT_INACTIVITY_MS;
           const isLongInactive =
             hasDetectedActivity &&
             !changed &&
@@ -449,11 +455,15 @@ export function useTerminalScreenshotMonitor() {
           const isPossiblyDone =
             hasDetectedActivity &&
             !changed &&
+            !isNeedsAttention &&
+            hasAcknowledgedCurrentOutput &&
             !isLongInactive &&
             now - idleStartedAt >= SCREENSHOT_INACTIVITY_MS;
-          const shouldKeepAttentionUntilFocus = false;
+          const shouldKeepAttentionUntilFocus = latestSessions.some(
+            (session) => session.isNeedsAttention
+          );
           const shouldKeepBrownUntilInput =
-            !changed && latestSessions.some((session) => session.isPossiblyDone);
+            latestSessions.some((session) => session.isPossiblyDone);
           const shouldRevertToGreen =
             changed
             && !shouldKeepAttentionUntilFocus
@@ -464,7 +474,7 @@ export function useTerminalScreenshotMonitor() {
               ? false
               : shouldKeepBrownUntilInput
                 ? false
-                : false;
+                : (isNeedsAttention && !isLongInactive);
           const nextPossiblyDone = shouldKeepAttentionUntilFocus
             ? false
             : shouldRevertToGreen

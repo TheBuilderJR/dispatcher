@@ -105,7 +105,7 @@ describe("useTerminalStore", () => {
   });
 
   describe("markTerminalOutput", () => {
-    it("records output activity and clears stale inactive state", () => {
+    it("records output activity without clearing attention or done state", () => {
       useTerminalStore.getState().addSession("t1", "First");
       useTerminalStore.getState().setNeedsAttention("t1", true);
       useTerminalStore.getState().setPossiblyDone("t1", true);
@@ -114,8 +114,8 @@ describe("useTerminalStore", () => {
       const session = useTerminalStore.getState().sessions["t1"];
       expect(session.hasDetectedActivity).toBe(true);
       expect(session.lastOutputAt).toBeGreaterThan(0);
-      expect(session.isNeedsAttention).toBe(false);
-      expect(session.isPossiblyDone).toBe(false);
+      expect(session.isNeedsAttention).toBe(true);
+      expect(session.isPossiblyDone).toBe(true);
       expect(session.isLongInactive).toBe(false);
     });
   });

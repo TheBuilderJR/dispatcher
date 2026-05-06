@@ -211,39 +211,47 @@ describe("useTerminalBridge synthetic input", () => {
     useLayoutStore.getState().initLayout("tab-root", "pane");
 
     useTerminalStore.getState().setDetectedActivity("tab-root", true);
+    useTerminalStore.getState().setNeedsAttention("tab-root", true);
     useTerminalStore.getState().setPossiblyDone("tab-root", true);
     useTerminalStore.getState().setLongInactive("tab-root", true);
     useTerminalStore.getState().setDetectedActivity("pane", true);
+    useTerminalStore.getState().setNeedsAttention("pane", true);
     useTerminalStore.getState().setPossiblyDone("pane", true);
     useTerminalStore.getState().setLongInactive("pane", true);
 
     reflectImmediateTabActivity("pane");
 
+    expect(useTerminalStore.getState().sessions["tab-root"].isNeedsAttention).toBe(false);
     expect(useTerminalStore.getState().sessions["tab-root"].isPossiblyDone).toBe(false);
     expect(useTerminalStore.getState().sessions["tab-root"].isLongInactive).toBe(false);
     expect(useTerminalStore.getState().sessions["tab-root"].hasDetectedActivity).toBe(true);
+    expect(useTerminalStore.getState().sessions["pane"].isNeedsAttention).toBe(false);
     expect(useTerminalStore.getState().sessions["pane"].isPossiblyDone).toBe(false);
     expect(useTerminalStore.getState().sessions["pane"].isLongInactive).toBe(false);
   });
 
-  it("clears brown tab status immediately for a tab-root session when a child pane gets real output", () => {
+  it("records real output without clearing brown tab status", () => {
     useTerminalStore.getState().addSession("tab-root", "A");
     useTerminalStore.getState().addSession("pane", "A");
     useLayoutStore.getState().initLayout("tab-root", "pane");
 
     useTerminalStore.getState().setDetectedActivity("tab-root", true);
+    useTerminalStore.getState().setNeedsAttention("tab-root", true);
     useTerminalStore.getState().setPossiblyDone("tab-root", true);
     useTerminalStore.getState().setLongInactive("tab-root", true);
     useTerminalStore.getState().setDetectedActivity("pane", true);
+    useTerminalStore.getState().setNeedsAttention("pane", true);
     useTerminalStore.getState().setPossiblyDone("pane", true);
     useTerminalStore.getState().setLongInactive("pane", true);
 
     queueTerminalOutput("pane", "still running\n");
 
-    expect(useTerminalStore.getState().sessions["tab-root"].isPossiblyDone).toBe(false);
+    expect(useTerminalStore.getState().sessions["tab-root"].isNeedsAttention).toBe(true);
+    expect(useTerminalStore.getState().sessions["tab-root"].isPossiblyDone).toBe(true);
     expect(useTerminalStore.getState().sessions["tab-root"].isLongInactive).toBe(false);
     expect(useTerminalStore.getState().sessions["tab-root"].hasDetectedActivity).toBe(true);
-    expect(useTerminalStore.getState().sessions["pane"].isPossiblyDone).toBe(false);
+    expect(useTerminalStore.getState().sessions["pane"].isNeedsAttention).toBe(true);
+    expect(useTerminalStore.getState().sessions["pane"].isPossiblyDone).toBe(true);
     expect(useTerminalStore.getState().sessions["pane"].isLongInactive).toBe(false);
     expect(useTerminalStore.getState().sessions["pane"].lastOutputAt).toBeGreaterThan(0);
   });
