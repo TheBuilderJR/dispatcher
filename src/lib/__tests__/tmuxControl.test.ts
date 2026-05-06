@@ -116,7 +116,12 @@ function seedTransportTerminal(transportTerminalId: string) {
   });
 }
 
-async function hydrateSingleWindow(transportTerminalId: string) {
+async function hydrateSingleWindow(
+  transportTerminalId: string,
+  options?: {
+    captureInitialContent?: boolean;
+  }
+) {
   routeTmuxTransportOutput(transportTerminalId, TMUX_CONTROL_START);
   await vi.runOnlyPendingTimersAsync();
   await vi.runOnlyPendingTimersAsync();
@@ -135,6 +140,20 @@ async function hydrateSingleWindow(transportTerminalId: string) {
   );
   await Promise.resolve();
   await Promise.resolve();
+  if (options?.captureInitialContent !== false) {
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 3 0",
+        "initial screen",
+        "%end 3 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+  }
 }
 
 async function hydrateTwoWindows(transportTerminalId: string) {
@@ -153,6 +172,30 @@ async function hydrateTwoWindows(transportTerminalId: string) {
       "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren/one\t4\t7\t0",
       "@2\t%2\t0\t0\t80\t24\t1\t/Users/bobren/two\t1\t2\t0",
       "%end 2 0",
+      "",
+    ].join("\n")
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+  await vi.runOnlyPendingTimersAsync();
+  routeTmuxTransportOutput(
+    transportTerminalId,
+    [
+      "%begin 3 0",
+      "",
+      "%end 3 0",
+      "",
+    ].join("\n")
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+  await vi.runOnlyPendingTimersAsync();
+  routeTmuxTransportOutput(
+    transportTerminalId,
+    [
+      "%begin 4 0",
+      "",
+      "%end 4 0",
       "",
     ].join("\n")
   );
@@ -181,12 +224,23 @@ async function hydrateSplitWindow(transportTerminalId: string) {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+  await vi.runOnlyPendingTimersAsync();
   routeTmuxTransportOutput(
     transportTerminalId,
     [
       "%begin 3 0",
       "left screen",
       "%end 3 0",
+      "",
+    ].join("\n")
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await vi.runOnlyPendingTimersAsync();
+  routeTmuxTransportOutput(
+    transportTerminalId,
+    [
       "%begin 4 0",
       "right screen",
       "%end 4 0",
@@ -362,6 +416,7 @@ describe("tmuxControl", () => {
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
+    await vi.runOnlyPendingTimersAsync();
     expect(writeTerminalMock).toHaveBeenLastCalledWith(
       transportTerminalId,
       "capture-pane -p -e -C -S -3 -t %1\n"
@@ -401,8 +456,72 @@ describe("tmuxControl", () => {
     const paneTerminalId = getPaneTerminalIdByPaneId("%1");
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       paneTerminalId,
-      "\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jhistory row\r\nfull screen row\u001b[H\u001b[2Jvisible screen row\u001b[?7h\u001b[0m\u001b[4;3H"
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jhistory row\r\nfull screen row\u001b[H\u001b[2Jvisible screen row\u001b[?7h\u001b[0m\u001b[4;3H",
+      { recordActivity: false }
     );
+  });
+
+  it("captures the active tmux pane history before lazy background panes", async () => {
+    const transportTerminalId = "transport-lazy-history";
+    seedTransportTerminal(transportTerminalId);
+
+    routeTmuxTransportOutput(transportTerminalId, TMUX_CONTROL_START);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.runOnlyPendingTimersAsync();
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 1 0",
+        "@1\tone\t0\t-",
+        "@2\ttwo\t1\t*",
+        "%end 1 0",
+        "%begin 2 0",
+        "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren/one\t4\t7\t0",
+        "@2\t%2\t0\t0\t80\t24\t1\t/Users/bobren/two\t1\t2\t0",
+        "%end 2 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const writeCalls = writeTerminalMock.mock.calls as unknown as Array<[string, string]>;
+    expect(writeCalls.some(([, data]) => data.startsWith("capture-pane"))).toBe(false);
+
+    await vi.runOnlyPendingTimersAsync();
+    expect(writeTerminalMock).toHaveBeenLastCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %2\n"
+    );
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 3 0",
+        "active pane",
+        "%end 3 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await vi.runOnlyPendingTimersAsync();
+    expect(writeTerminalMock).toHaveBeenLastCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 4 0",
+        "background pane",
+        "%end 4 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
   });
 
   it("syncs tmux window size when a pane viewport resizes", async () => {
@@ -478,7 +597,8 @@ describe("tmuxControl", () => {
     await Promise.resolve();
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       paneTerminalId,
-      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jclean screen\u001b[?7h\u001b[0m\u001b[8;5H"
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jclean screen\u001b[?7h\u001b[0m\u001b[8;5H",
+      { recordActivity: false }
     );
 
     expect(syncTmuxWindowSizeFromPaneTerminal(paneTerminalId)).toBe(false);
@@ -572,11 +692,13 @@ describe("tmuxControl", () => {
 
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       leftPaneTerminalId,
-      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jleft clean\u001b[?7h\u001b[0m\u001b[8;5H"
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jleft clean\u001b[?7h\u001b[0m\u001b[8;5H",
+      { recordActivity: false }
     );
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       rightPaneTerminalId,
-      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jright clean\u001b[?7h\u001b[0m\u001b[3;2H"
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jright clean\u001b[?7h\u001b[0m\u001b[3;2H",
+      { recordActivity: false }
     );
   });
 

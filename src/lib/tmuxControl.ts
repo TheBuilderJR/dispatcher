@@ -127,6 +127,9 @@ interface TmuxControlSession {
   outputLogSuppressed: boolean;
   needsBootstrapRefresh: boolean;
   pendingPaneOutput: Map<string, string[]>;
+  pendingInitialPaneCaptures: string[];
+  initialPaneCaptureTimer: number | null;
+  initialPaneCaptureActive: boolean;
 }
 
 interface TmuxRuntimeState {
@@ -183,6 +186,8 @@ const transportRawCarry = tmuxRuntime.transportRawCarry;
 const TMUX_OUTPUT_LOG_LIMIT = 25;
 const TMUX_BOOTSTRAP_FALLBACK_DELAY_MS = 100;
 const TMUX_USER_PANE_RESIZE_LOCK_MS = 4_000;
+const TMUX_INITIAL_CAPTURE_BACKGROUND_DELAY_MS = 250;
+const TMUX_INITIAL_CAPTURE_RETRY_DELAY_MS = 50;
 const TMUX_CONTROL_LINE_PREFIXES = [
   "%begin",
   "%client-",
@@ -200,6 +205,12 @@ const TMUX_CONTROL_LINE_PREFIXES = [
 ] as const;
 const TMUX_CONTROL_LINE_PATTERN =
   /(?:^|[\r\n])(%(?:begin|client-|end|error|exit|extended-output|layout-change|output|pane-|session|sessions-|unlinked-window-|window-)(?:\s|$))/;
+
+function ensureInitialPaneCaptureState(session: TmuxControlSession) {
+  session.pendingInitialPaneCaptures ??= [];
+  session.initialPaneCaptureTimer ??= null;
+  session.initialPaneCaptureActive ??= false;
+}
 
 function isGenericDispatcherTitle(title: string): boolean {
   return title === "Shell" || /^Terminal \d+$/.test(title);
@@ -314,6 +325,9 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     outputLogSuppressed: false,
     needsBootstrapRefresh: false,
     pendingPaneOutput: new Map(),
+    pendingInitialPaneCaptures: [],
+    initialPaneCaptureTimer: null,
+    initialPaneCaptureActive: false,
   };
 
   for (const [nodeId, node] of Object.entries(projectState.nodes)) {
@@ -439,7 +453,11 @@ function getControlSessionById(sessionId: string | undefined): TmuxControlSessio
   if (!sessionId) {
     return null;
   }
-  return controlSessions.get(sessionId) ?? recoverControlSessionFromStore(sessionId);
+  const session = controlSessions.get(sessionId) ?? recoverControlSessionFromStore(sessionId);
+  if (session) {
+    ensureInitialPaneCaptureState(session);
+  }
+  return session;
 }
 
 function getControlSessionForTerminal(terminalId: string): TmuxControlSession | null {
@@ -915,6 +933,7 @@ function detachControlSessionProjections(session: TmuxControlSession, reason: st
     panes: session.panes.size,
   });
 
+  clearInitialPaneCaptureQueue(session);
   session.pendingWindowRedraws.clear();
   session.userPaneResizeLocks.clear();
 
@@ -1016,6 +1035,7 @@ function upsertWindowProjection(
   panes: readonly TmuxPaneSnapshot[],
   options?: {
     preserveLayout?: boolean;
+    captureInitialContent?: boolean;
   }
 ): WindowProjectionResult | null {
   if (panes.length === 0) {
@@ -1232,8 +1252,10 @@ function upsertWindowProjection(
       windowState.activePaneId = paneSnapshot.paneId;
     }
 
-    if (!paneState.initialContentCaptured) {
-      void captureInitialPaneContent(session, paneState);
+    if (!paneState.initialContentCaptured && options?.captureInitialContent !== false) {
+      queueInitialPaneContentCapture(session, paneState, {
+        reason: "window-projection",
+      });
     }
   }
 
@@ -1360,6 +1382,177 @@ async function sendCommand(session: TmuxControlSession, command: string): Promis
   });
 }
 
+function clearInitialPaneCaptureQueue(session: TmuxControlSession) {
+  ensureInitialPaneCaptureState(session);
+  if (session.initialPaneCaptureTimer !== null) {
+    window.clearTimeout(session.initialPaneCaptureTimer);
+    session.initialPaneCaptureTimer = null;
+  }
+  session.pendingInitialPaneCaptures = [];
+}
+
+function scheduleInitialPaneCaptureFlush(session: TmuxControlSession, delayMs: number) {
+  ensureInitialPaneCaptureState(session);
+  if (session.initialPaneCaptureTimer !== null) {
+    if (delayMs > 0) {
+      return;
+    }
+    window.clearTimeout(session.initialPaneCaptureTimer);
+  }
+
+  session.initialPaneCaptureTimer = window.setTimeout(() => {
+    session.initialPaneCaptureTimer = null;
+    flushInitialPaneCaptureQueue(session);
+  }, delayMs);
+}
+
+function queueInitialPaneContentCapture(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  options?: {
+    priority?: boolean;
+    reason?: string;
+  }
+) {
+  ensureInitialPaneCaptureState(session);
+  if (pane.initialContentCaptured) {
+    session.pendingInitialPaneCaptures = session.pendingInitialPaneCaptures.filter(
+      (paneId) => paneId !== pane.paneId
+    );
+    return;
+  }
+
+  const existingIndex = session.pendingInitialPaneCaptures.indexOf(pane.paneId);
+  if (existingIndex !== -1) {
+    session.pendingInitialPaneCaptures.splice(existingIndex, 1);
+  }
+
+  if (options?.priority) {
+    session.pendingInitialPaneCaptures.unshift(pane.paneId);
+  } else {
+    session.pendingInitialPaneCaptures.push(pane.paneId);
+  }
+
+  debugLog("tmux.capture", "queue initial pane content", {
+    sessionId: session.id,
+    paneId: pane.paneId,
+    terminalId: pane.terminalId,
+    priority: Boolean(options?.priority),
+    reason: options?.reason ?? null,
+    queuedPanes: session.pendingInitialPaneCaptures.length,
+  });
+
+  scheduleInitialPaneCaptureFlush(
+    session,
+    options?.priority ? 0 : TMUX_INITIAL_CAPTURE_BACKGROUND_DELAY_MS
+  );
+}
+
+function flushInitialPaneCaptureQueue(session: TmuxControlSession) {
+  ensureInitialPaneCaptureState(session);
+  if (!controlSessions.has(session.id)) {
+    return;
+  }
+  if (session.initialPaneCaptureActive) {
+    return;
+  }
+  if (session.currentCommand !== null || session.pendingCommands.length > 0) {
+    scheduleInitialPaneCaptureFlush(session, TMUX_INITIAL_CAPTURE_RETRY_DELAY_MS);
+    return;
+  }
+
+  let pane: TmuxPaneState | null = null;
+  while (session.pendingInitialPaneCaptures.length > 0) {
+    const paneId = session.pendingInitialPaneCaptures.shift()!;
+    const candidate = session.panes.get(paneId) ?? null;
+    if (candidate && !candidate.initialContentCaptured) {
+      pane = candidate;
+      break;
+    }
+  }
+  if (!pane) {
+    return;
+  }
+
+  session.initialPaneCaptureActive = true;
+  debugLog("tmux.capture", "flush initial pane content", {
+    sessionId: session.id,
+    paneId: pane.paneId,
+    terminalId: pane.terminalId,
+    remainingQueuedPanes: session.pendingInitialPaneCaptures.length,
+  });
+
+  void captureInitialPaneContent(session, pane).finally(() => {
+    session.initialPaneCaptureActive = false;
+    if (!controlSessions.has(session.id)) {
+      return;
+    }
+    if (session.pendingInitialPaneCaptures.length > 0) {
+      scheduleInitialPaneCaptureFlush(session, TMUX_INITIAL_CAPTURE_BACKGROUND_DELAY_MS);
+    }
+  });
+}
+
+function queueHydratedInitialPaneCaptures(
+  session: TmuxControlSession,
+  windowSnapshots: readonly TmuxWindowSnapshot[],
+  panesByWindowId: ReadonlyMap<string, readonly TmuxPaneSnapshot[]>,
+  activeWindowId: string | null,
+  activePaneId: string | null
+) {
+  const orderedPaneIds: string[] = [];
+  const seenPaneIds = new Set<string>();
+  const appendPaneId = (paneId: string | null | undefined) => {
+    if (!paneId || seenPaneIds.has(paneId)) {
+      return;
+    }
+    seenPaneIds.add(paneId);
+    orderedPaneIds.push(paneId);
+  };
+
+  appendPaneId(activePaneId);
+  for (const pane of activeWindowId ? panesByWindowId.get(activeWindowId) ?? [] : []) {
+    appendPaneId(pane.paneId);
+  }
+
+  const snapshotWindowOrder = windowSnapshots.map((snapshot) => snapshot.windowId);
+  const windowOrder = session.windowOrder.length > 0 ? session.windowOrder : snapshotWindowOrder;
+  for (const windowId of windowOrder) {
+    if (windowId === activeWindowId) {
+      continue;
+    }
+    for (const pane of panesByWindowId.get(windowId) ?? []) {
+      appendPaneId(pane.paneId);
+    }
+  }
+  for (const windowId of snapshotWindowOrder) {
+    for (const pane of panesByWindowId.get(windowId) ?? []) {
+      appendPaneId(pane.paneId);
+    }
+  }
+
+  let queuedCount = 0;
+  orderedPaneIds.forEach((paneId, index) => {
+    const pane = session.panes.get(paneId);
+    if (!pane || pane.initialContentCaptured) {
+      return;
+    }
+    queuedCount += 1;
+    queueInitialPaneContentCapture(session, pane, {
+      priority: index === 0,
+      reason: index === 0 ? "hydrate-active-pane" : "hydrate-background-pane",
+    });
+  });
+
+  debugLog("tmux.capture", "hydrated initial pane capture queue", {
+    sessionId: session.id,
+    activeWindowId,
+    activePaneId,
+    orderedPanes: orderedPaneIds.length,
+    queuedPanes: queuedCount,
+  });
+}
+
 async function captureInitialPaneContent(session: TmuxControlSession, pane: TmuxPaneState) {
   if (pane.initialContentCaptured) {
     return;
@@ -1415,7 +1608,8 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
       : "";
     queueTerminalOutput(
       pane.terminalId,
-      `\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3J${content}${redrawScreen}\u001b[?7h\u001b[0m\u001b[${cursorRow};${cursorCol}H`
+      `\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3J${content}${redrawScreen}\u001b[?7h\u001b[0m\u001b[${cursorRow};${cursorCol}H`,
+      { recordActivity: false }
     );
     debugLog("tmux.capture", "initial pane content complete", {
       sessionId: session.id,
@@ -1471,7 +1665,8 @@ async function redrawVisiblePaneContent(
   const content = unescapeTmuxOutput(lines.join("\r\n"));
   queueTerminalOutput(
     pane.terminalId,
-    `\u001b[0m\u001b[?7l\u001b[H\u001b[2J${content}\u001b[?7h\u001b[0m\u001b[${cursorRow};${cursorCol}H`
+    `\u001b[0m\u001b[?7l\u001b[H\u001b[2J${content}\u001b[?7h\u001b[0m\u001b[${cursorRow};${cursorCol}H`,
+    { recordActivity: false }
   );
   debugLog("tmux.capture", "visible pane redraw complete", {
     sessionId: session.id,
@@ -1656,7 +1851,9 @@ async function hydrateControlSession(session: TmuxControlSession) {
     }
 
     for (const snapshot of windowSnapshots) {
-      upsertWindowProjection(session, snapshot, panesByWindowId.get(snapshot.windowId) ?? []);
+      upsertWindowProjection(session, snapshot, panesByWindowId.get(snapshot.windowId) ?? [], {
+        captureInitialContent: false,
+      });
     }
 
     const parentChildren = useProjectStore.getState().nodes[session.parentNodeId]?.children ?? [];
@@ -1681,6 +1878,13 @@ async function hydrateControlSession(session: TmuxControlSession) {
         allowWindowSwitch: true,
       });
     }
+    queueHydratedInitialPaneCaptures(
+      session,
+      windowSnapshots,
+      panesByWindowId,
+      activeWindow?.windowId ?? null,
+      activePane?.paneId ?? null
+    );
     if (activeWindow && !session.transportMetadataAdopted) {
       adoptTransportMetadataForWindow(session, activeWindow.windowId);
     }
@@ -2184,6 +2388,9 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     outputLogSuppressed: false,
     needsBootstrapRefresh: true,
     pendingPaneOutput: new Map(),
+    pendingInitialPaneCaptures: [],
+    initialPaneCaptureTimer: null,
+    initialPaneCaptureActive: false,
   };
 
   controlSessions.set(session.id, session);
@@ -2417,6 +2624,10 @@ export function handleTmuxTerminalFocus(terminalId: string) {
     debugLogError("tmux.focus", "select-window failed", error);
   });
   if (pane) {
+    queueInitialPaneContentCapture(session, pane, {
+      priority: true,
+      reason: "focus",
+    });
     void sendCommand(session, `select-pane -t ${pane.paneId}`).catch((error) => {
       debugLogError("tmux.focus", "select-pane failed", error);
     });

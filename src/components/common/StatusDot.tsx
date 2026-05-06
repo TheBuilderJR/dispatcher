@@ -12,7 +12,7 @@ export function StatusDot({ terminalId }: { terminalId: string }) {
   const backgroundColor = !hasDetectedActivity
       ? GRAY
       : isNeedsAttention
-        ? GREEN
+        ? BROWN
       : isLongInactive
         ? GRAY
       : isPossiblyDone
@@ -23,7 +23,7 @@ export function StatusDot({ terminalId }: { terminalId: string }) {
   return (
     <span
       className={className}
-      style={{ backgroundColor }}
+      style={{ backgroundColor, color: backgroundColor }}
     />
   );
 }

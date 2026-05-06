@@ -83,3 +83,10 @@ export async function appendDebugLog(message: string): Promise<void> {
 export async function getDebugLogPath(): Promise<string> {
   return await invoke("get_debug_log_path");
 }
+
+export async function writeDebugArtifact(
+  fileName: string,
+  content: string
+): Promise<string> {
+  return await invoke("write_debug_artifact", { fileName, content });
+}

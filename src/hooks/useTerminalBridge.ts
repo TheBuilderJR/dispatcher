@@ -55,6 +55,10 @@ interface FocusSequenceSuppression {
   expiresAt: number;
 }
 
+interface QueuedTerminalOutputOptions {
+  recordActivity?: boolean;
+}
+
 interface TerminalBridgeRuntimeState {
   instances: Map<string, TerminalInstance>;
   createdPtys: Set<string>;
@@ -206,7 +210,11 @@ function flushBufferedWrite(terminalId: string) {
   instances.get(terminalId)?.xterm.write(combined);
 }
 
-function batchedWrite(terminalId: string, data: string) {
+function batchedWrite(
+  terminalId: string,
+  data: string,
+  options?: QueuedTerminalOutputOptions
+) {
   let buffer = writeBuffers.get(terminalId);
   if (!buffer) {
     buffer = [];
@@ -215,7 +223,8 @@ function batchedWrite(terminalId: string, data: string) {
   buffer.push(data);
 
   const shouldRecordOutput =
-    data.length > 0
+    options?.recordActivity !== false
+    && data.length > 0
     && !isTransientFocusSequence(data)
     && !writeStatusRecorded.has(terminalId);
   if (shouldRecordOutput) {
@@ -244,8 +253,12 @@ function batchedWrite(terminalId: string, data: string) {
   }
 }
 
-export function queueTerminalOutput(terminalId: string, data: string) {
-  batchedWrite(terminalId, data);
+export function queueTerminalOutput(
+  terminalId: string,
+  data: string,
+  options?: QueuedTerminalOutputOptions
+) {
+  batchedWrite(terminalId, data, options);
 }
 
 export function reflectImmediateTabActivity(terminalId: string) {
@@ -278,6 +291,7 @@ function reflectImmediateTabOutput(terminalId: string) {
 
   for (const statusTerminalId of statusTerminalIds) {
     terminalStore.setDetectedActivity(statusTerminalId, true);
+    terminalStore.setNeedsAttention(statusTerminalId, false);
     terminalStore.setPossiblyDone(statusTerminalId, false);
     terminalStore.setLongInactive(statusTerminalId, false);
   }

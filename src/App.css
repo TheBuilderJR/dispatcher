@@ -549,23 +549,23 @@ html, body, #root {
 
 .status-dot-pulsing {
   animation: status-dot-pulse 1.4s ease-in-out infinite;
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 60%, transparent);
+  box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 60%, transparent);
 }
 
 @keyframes status-dot-pulse {
   0% {
     transform: scale(1);
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 62%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 62%, transparent);
   }
 
   60% {
     transform: scale(1.22);
-    box-shadow: 0 0 0 6px color-mix(in srgb, var(--green) 0%, transparent);
+    box-shadow: 0 0 0 6px color-mix(in srgb, currentColor 0%, transparent);
   }
 
   100% {
     transform: scale(1);
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 0%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 0%, transparent);
   }
 }
 

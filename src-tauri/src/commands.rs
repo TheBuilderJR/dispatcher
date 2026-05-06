@@ -1,5 +1,6 @@
 use crate::errors::PtyError;
 use crate::pty_manager::{PtyManager, TerminalDebugInfo, TerminalOutput};
+use std::fs;
 #[allow(unused_imports)]
 use tauri::{ipc::Channel, AppHandle, State};
 
@@ -174,6 +175,37 @@ pub fn append_debug_log(message: String) -> Result<(), PtyError> {
 #[tauri::command]
 pub fn get_debug_log_path() -> Result<String, PtyError> {
     Ok(crate::debug_log::debug_log_path().display().to_string())
+}
+
+fn sanitize_debug_artifact_name(file_name: &str) -> String {
+    let sanitized: String = file_name
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => ch,
+            _ => '_',
+        })
+        .collect();
+
+    if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
+        "artifact.txt".to_string()
+    } else {
+        sanitized
+    }
+}
+
+#[tauri::command]
+pub fn write_debug_artifact(file_name: String, content: String) -> Result<String, PtyError> {
+    let debug_log_path = crate::debug_log::debug_log_path();
+    let dir = debug_log_path
+        .parent()
+        .map(|parent| parent.join("dispatcher-debug-artifacts"))
+        .unwrap_or_else(|| std::env::temp_dir().join("dispatcher-debug-artifacts"));
+    fs::create_dir_all(&dir)?;
+
+    let path = dir.join(sanitize_debug_artifact_name(&file_name));
+    fs::write(&path, content)?;
+
+    Ok(path.display().to_string())
 }
 
 #[tauri::command]

@@ -29,6 +29,7 @@ pub fn run() {
             commands::get_terminal_debug_info,
             commands::append_debug_log,
             commands::get_debug_log_path,
+            commands::write_debug_artifact,
             commands::show_font_panel,
             commands::hide_font_panel,
         ])

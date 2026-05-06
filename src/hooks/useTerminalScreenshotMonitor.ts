@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { captureTerminalVisualSnapshot, ensureTerminalScreenshotTarget } from "./useTerminalBridge";
 import { findLayoutKeyForTerminal } from "../lib/layoutUtils";
 import { pushScreenshotDebug } from "../lib/screenshotDebug";
+import { writeDebugArtifact } from "../lib/tauriCommands";
 import {
   buildCompoundScreenshotHashInput,
   buildTerminalVisualHashInput,
@@ -9,16 +10,28 @@ import {
   getTabStatusTerminalIds,
   getTabTerminalIds,
   summarizeTerminalVisualChange,
+  type TerminalVisualChangeSummary,
   type TerminalVisualTextSnapshot,
 } from "../lib/terminalScreenshotHash";
-import { debugLog } from "../lib/debugLog";
+import { debugLog, previewDebugText } from "../lib/debugLog";
 import { isDisconnectedTmuxPlaceholderTerminal } from "../lib/tmuxControl";
 import { useLayoutStore } from "../stores/useLayoutStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
+import type { TerminalSession } from "../types/terminal";
 
 const SCREENSHOT_INTERVAL_MS = 5_000;
 const SCREENSHOT_INACTIVITY_MS = 10_000;
 const SCREENSHOT_LONG_INACTIVITY_MS = 60 * 60 * 1000;
+const SCREENSHOT_ARTIFACT_INTERVAL_MS = 30_000;
+const MAX_SCREENSHOT_ARTIFACT_COMPONENTS = 4;
+const MAX_SCREENSHOT_ARTIFACT_LINES = 120;
+const MAX_SCREENSHOT_ARTIFACT_LINE_CHARS = 240;
+
+type ScreenshotSample = {
+  terminalId: string;
+  screenshot: string;
+  snapshot: TerminalVisualTextSnapshot;
+};
 
 async function hashScreenshot(screenshot: string): Promise<string> {
   const bytes = new TextEncoder().encode(screenshot);
@@ -36,6 +49,216 @@ function getActiveTabRootTerminalId(): string | null {
   return findLayoutKeyForTerminal(layouts, activeTerminalId) ?? activeTerminalId;
 }
 
+function sanitizeArtifactNamePart(value: string): string {
+  const sanitized = value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
+  return sanitized.length > 0 ? sanitized : "terminal";
+}
+
+function artifactTimestamp(now: number): string {
+  return new Date(now).toISOString().replace(/[:.]/g, "-");
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case "\"":
+        return "&quot;";
+      case "'":
+        return "&#39;";
+      default:
+        return char;
+    }
+  });
+}
+
+function buildScreenshotArtifactHtml(args: {
+  title: string;
+  imageDataUrl: string;
+  details: unknown;
+}): string {
+  return [
+    "<!doctype html>",
+    "<html>",
+    "<head>",
+    "  <meta charset=\"utf-8\">",
+    `  <title>${escapeHtml(args.title)}</title>`,
+    "  <style>",
+    "    body { margin: 0; padding: 16px; background: #111; color: #ddd; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }",
+    "    img { display: block; max-width: 100%; height: auto; image-rendering: auto; border: 1px solid #333; }",
+    "    pre { white-space: pre-wrap; overflow-wrap: anywhere; }",
+    "  </style>",
+    "</head>",
+    "<body>",
+    `  <h1>${escapeHtml(args.title)}</h1>`,
+    `  <img src=\"${args.imageDataUrl}\" alt=\"${escapeHtml(args.title)}\">`,
+    `  <pre>${escapeHtml(JSON.stringify(args.details, null, 2))}</pre>`,
+    "</body>",
+    "</html>",
+    "",
+  ].join("\n");
+}
+
+function buildVisibleLinePreview(snapshot: TerminalVisualTextSnapshot) {
+  const startRow = Math.max(0, snapshot.lines.length - MAX_SCREENSHOT_ARTIFACT_LINES);
+  return snapshot.lines.slice(startRow).map((line, index) => ({
+    row: startRow + index,
+    text: previewDebugText(line, MAX_SCREENSHOT_ARTIFACT_LINE_CHARS),
+  }));
+}
+
+function getStatusDotSemantic(args: {
+  hasDetectedActivity: boolean;
+  nextNeedsAttention: boolean;
+  nextPossiblyDone: boolean;
+  nextLongInactive: boolean;
+}): string {
+  if (!args.hasDetectedActivity) {
+    return "gray-idle";
+  }
+  if (args.nextNeedsAttention) {
+    return "brown-needs-attention";
+  }
+  if (args.nextLongInactive) {
+    return "gray-long-inactive";
+  }
+  if (args.nextPossiblyDone) {
+    return "brown-possibly-done";
+  }
+  return "green-active";
+}
+
+async function writeScreenshotDebugArtifacts(args: {
+  now: number;
+  tabRootTerminalId: string;
+  activeTabRootTerminalId: string | null;
+  terminalIds: string[];
+  statusTerminalIds: string[];
+  screenshots: ScreenshotSample[];
+  componentHashes: string[];
+  hash: string;
+  previousHash: string | null;
+  visualChange: TerminalVisualChangeSummary;
+  changed: boolean;
+  hasDetectedActivity: boolean;
+  isActiveTab: boolean;
+  lastUserInputAt: number;
+  lastOutputAt: number;
+  effectiveChangedAt: number;
+  acknowledgedTime: number;
+  idleStartedAt: number;
+  nextNeedsAttention: boolean;
+  nextPossiblyDone: boolean;
+  nextLongInactive: boolean;
+  shouldKeepAttentionUntilFocus: boolean;
+  shouldKeepBrownUntilInput: boolean;
+  sessions: TerminalSession[];
+  previousStatusSnapshot: string | null;
+  nextStatusSnapshot: string;
+}) {
+  const prefix = [
+    artifactTimestamp(args.now),
+    sanitizeArtifactNamePart(args.tabRootTerminalId),
+  ].join("_");
+  const statusDotSemantic = getStatusDotSemantic(args);
+  const metadata = {
+    timestamp: new Date(args.now).toISOString(),
+    tabRootTerminalId: args.tabRootTerminalId,
+    activeTabRootTerminalId: args.activeTabRootTerminalId,
+    terminalIds: args.terminalIds,
+    statusTerminalIds: args.statusTerminalIds,
+    statusDotSemantic,
+    previousStatusSnapshot: args.previousStatusSnapshot,
+    nextStatusSnapshot: args.nextStatusSnapshot,
+    hash: args.hash,
+    previousHash: args.previousHash,
+    componentHashes: args.componentHashes,
+    changed: args.changed,
+    exactChanged: args.visualChange.exactChanged,
+    repeatingHashOscillation: args.visualChange.repeatingHashOscillation,
+    hasThreeSamples: args.visualChange.hasThreeSamples,
+    changedRows: args.visualChange.changedRows,
+    changedChars: args.visualChange.changedChars,
+    changedRowRatio: args.visualChange.changedRowRatio,
+    changedCharRatio: args.visualChange.changedCharRatio,
+    hasDetectedActivity: args.hasDetectedActivity,
+    isActiveTab: args.isActiveTab,
+    lastUserInputAt: args.lastUserInputAt,
+    lastOutputAt: args.lastOutputAt,
+    effectiveChangedAt: args.effectiveChangedAt,
+    acknowledgedTime: args.acknowledgedTime,
+    idleStartedAt: args.idleStartedAt,
+    nextNeedsAttention: args.nextNeedsAttention,
+    nextPossiblyDone: args.nextPossiblyDone,
+    nextLongInactive: args.nextLongInactive,
+    shouldKeepAttentionUntilFocus: args.shouldKeepAttentionUntilFocus,
+    shouldKeepBrownUntilInput: args.shouldKeepBrownUntilInput,
+    sessions: args.sessions.map((session) => ({
+      id: session.id,
+      title: session.title,
+      backendKind: session.backendKind,
+      hasDetectedActivity: session.hasDetectedActivity,
+      lastUserInputAt: session.lastUserInputAt,
+      lastOutputAt: session.lastOutputAt,
+      isNeedsAttention: session.isNeedsAttention,
+      isPossiblyDone: session.isPossiblyDone,
+      isLongInactive: session.isLongInactive,
+      isRecentlyFocused: session.isRecentlyFocused,
+      tmuxControlSessionId: session.tmuxControlSessionId,
+      tmuxWindowId: session.tmuxWindowId,
+      tmuxPaneId: session.tmuxPaneId,
+    })),
+    components: args.screenshots.map(({ terminalId, snapshot }, index) => ({
+      terminalId,
+      hash: args.componentHashes[index] ?? null,
+      cols: snapshot.cols,
+      rows: snapshot.rows,
+      lineCount: snapshot.lines.length,
+      lines: buildVisibleLinePreview(snapshot),
+    })),
+  };
+
+  const paths = [
+    await writeDebugArtifact(`${prefix}.json`, JSON.stringify(metadata, null, 2)),
+  ];
+
+  for (const [index, sample] of args.screenshots
+    .slice(0, MAX_SCREENSHOT_ARTIFACT_COMPONENTS)
+    .entries()) {
+    const title = `${args.tabRootTerminalId} component ${index} ${sample.terminalId}`;
+    paths.push(await writeDebugArtifact(
+      `${prefix}_${index}_${sanitizeArtifactNamePart(sample.terminalId)}.html`,
+      buildScreenshotArtifactHtml({
+        title,
+        imageDataUrl: sample.screenshot,
+        details: {
+          tabRootTerminalId: args.tabRootTerminalId,
+          terminalId: sample.terminalId,
+          componentHash: args.componentHashes[index] ?? null,
+          statusDotSemantic,
+          nextStatusSnapshot: args.nextStatusSnapshot,
+          changed: args.changed,
+          exactChanged: args.visualChange.exactChanged,
+          repeatingHashOscillation: args.visualChange.repeatingHashOscillation,
+          changedRows: args.visualChange.changedRows,
+          changedChars: args.visualChange.changedChars,
+        },
+      })
+    ));
+  }
+
+  debugLog("status.monitor", "wrote screenshot artifacts", {
+    tabRootTerminalId: args.tabRootTerminalId,
+    statusDotSemantic,
+    paths,
+  });
+}
+
 export function useTerminalScreenshotMonitor() {
   useEffect(() => {
     const previousHashes = new Map<string, string>();
@@ -45,6 +268,7 @@ export function useTerminalScreenshotMonitor() {
     const previousStatusSnapshots = new Map<string, string>();
     const lastChangedAt = new Map<string, number>();
     const acknowledgedAt = new Map<string, number>();
+    const lastArtifactAt = new Map<string, number>();
     const scheduledSamples = new Set<number>();
     let isSampling = false;
     let isDisposed = false;
@@ -57,6 +281,7 @@ export function useTerminalScreenshotMonitor() {
       previousStatusSnapshots.delete(tabRootTerminalId);
       lastChangedAt.delete(tabRootTerminalId);
       acknowledgedAt.delete(tabRootTerminalId);
+      lastArtifactAt.delete(tabRootTerminalId);
     };
 
     const acknowledgeTab = (
@@ -122,11 +347,7 @@ export function useTerminalScreenshotMonitor() {
             continue;
           }
 
-          const screenshots: Array<{
-            terminalId: string;
-            screenshot: string;
-            snapshot: TerminalVisualTextSnapshot;
-          }> = [];
+          const screenshots: ScreenshotSample[] = [];
           let isReady = true;
           for (const terminalId of terminalIds) {
             const session = useTerminalStore.getState().sessions[terminalId];
@@ -221,12 +442,6 @@ export function useTerminalScreenshotMonitor() {
           const idleStartedAt = hasAcknowledgedCurrentOutput
             ? Math.max(effectiveChangedAt, acknowledgedTime)
             : effectiveChangedAt;
-          const isNeedsAttention =
-            hasDetectedActivity &&
-            !isActiveTab &&
-            !changed &&
-            !hasAcknowledgedCurrentOutput &&
-            now - effectiveChangedAt >= SCREENSHOT_INACTIVITY_MS;
           const isLongInactive =
             hasDetectedActivity &&
             !changed &&
@@ -234,14 +449,11 @@ export function useTerminalScreenshotMonitor() {
           const isPossiblyDone =
             hasDetectedActivity &&
             !changed &&
-            !isNeedsAttention &&
-            hasAcknowledgedCurrentOutput &&
             !isLongInactive &&
             now - idleStartedAt >= SCREENSHOT_INACTIVITY_MS;
-          const shouldKeepAttentionUntilFocus = latestSessions.some(
-            (session) => session.isNeedsAttention
-          );
-          const shouldKeepBrownUntilInput = latestSessions.some((session) => session.isPossiblyDone);
+          const shouldKeepAttentionUntilFocus = false;
+          const shouldKeepBrownUntilInput =
+            !changed && latestSessions.some((session) => session.isPossiblyDone);
           const shouldRevertToGreen =
             changed
             && !shouldKeepAttentionUntilFocus
@@ -252,7 +464,7 @@ export function useTerminalScreenshotMonitor() {
               ? false
               : shouldKeepBrownUntilInput
                 ? false
-                : (isNeedsAttention && !isLongInactive);
+                : false;
           const nextPossiblyDone = shouldKeepAttentionUntilFocus
             ? false
             : shouldRevertToGreen
@@ -261,6 +473,12 @@ export function useTerminalScreenshotMonitor() {
                 ? !isLongInactive
                 : isPossiblyDone;
           const nextLongInactive = nextNeedsAttention ? false : isLongInactive;
+          const statusDotSemantic = getStatusDotSemantic({
+            hasDetectedActivity,
+            nextNeedsAttention,
+            nextPossiblyDone,
+            nextLongInactive,
+          });
           const nextStatusSnapshot = [
             hasDetectedActivity ? "activity" : "idle",
             isActiveTab ? "active" : "background",
@@ -271,7 +489,8 @@ export function useTerminalScreenshotMonitor() {
             nextLongInactive ? "long-idle" : "not-long-idle",
           ].join("|");
           const previousStatusSnapshot = previousStatusSnapshots.get(tabRootTerminalId) ?? null;
-          if (previousStatusSnapshot !== nextStatusSnapshot) {
+          const statusTransitioned = previousStatusSnapshot !== nextStatusSnapshot;
+          if (statusTransitioned) {
             previousStatusSnapshots.set(tabRootTerminalId, nextStatusSnapshot);
             debugLog("status.monitor", "state transition", {
               tabRootTerminalId,
@@ -280,6 +499,7 @@ export function useTerminalScreenshotMonitor() {
               activeTabRootTerminalId,
               terminalIds,
               statusTerminalIds,
+              statusDotSemantic,
               changed,
               hasDetectedActivity,
               isActiveTab,
@@ -300,6 +520,61 @@ export function useTerminalScreenshotMonitor() {
               nextLongInactive,
               shouldKeepAttentionUntilFocus,
               shouldKeepBrownUntilInput,
+            });
+          }
+
+          const lastArtifactTime = lastArtifactAt.get(tabRootTerminalId) ?? 0;
+          const shouldWriteScreenshotArtifact =
+            !isBaselineCapture
+            && statusTransitioned
+            && now - lastArtifactTime >= SCREENSHOT_ARTIFACT_INTERVAL_MS;
+          if (shouldWriteScreenshotArtifact) {
+            lastArtifactAt.set(tabRootTerminalId, now);
+            void writeScreenshotDebugArtifacts({
+              now,
+              tabRootTerminalId,
+              activeTabRootTerminalId,
+              terminalIds,
+              statusTerminalIds,
+              screenshots,
+              componentHashes,
+              hash,
+              previousHash,
+              visualChange,
+              changed,
+              hasDetectedActivity,
+              isActiveTab,
+              lastUserInputAt,
+              lastOutputAt,
+              effectiveChangedAt,
+              acknowledgedTime,
+              idleStartedAt,
+              nextNeedsAttention,
+              nextPossiblyDone,
+              nextLongInactive,
+              shouldKeepAttentionUntilFocus,
+              shouldKeepBrownUntilInput,
+              sessions: latestSessions,
+              previousStatusSnapshot,
+              nextStatusSnapshot,
+            }).catch((error) => {
+              debugLog("status.monitor", "failed to write screenshot artifacts; inlining first screenshot", {
+                error: error instanceof Error ? error.message : String(error),
+                tabRootTerminalId,
+                statusDotSemantic,
+                nextStatusSnapshot,
+                terminalIds,
+                statusTerminalIds,
+                hash,
+                previousHash,
+                changed,
+                exactChanged: visualChange.exactChanged,
+                repeatingHashOscillation: visualChange.repeatingHashOscillation,
+                changedRows: visualChange.changedRows,
+                changedChars: visualChange.changedChars,
+                firstComponentTerminalId: screenshots[0]?.terminalId ?? null,
+                firstComponentImageDataUrl: screenshots[0]?.screenshot ?? null,
+              });
             });
           }
 
