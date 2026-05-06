@@ -1,0 +1,66 @@
+import { describe, expect, it } from "vitest";
+import { resolveTerminalScreenshotStatus, type TerminalScreenshotStatusInput } from "../terminalScreenshotStatus";
+
+const INACTIVITY_MS = 10_000;
+const LONG_INACTIVITY_MS = 60 * 60 * 1000;
+
+function status(patch: Partial<TerminalScreenshotStatusInput> = {}) {
+  return resolveTerminalScreenshotStatus({
+    hasDetectedActivity: true,
+    isActiveTab: false,
+    changed: false,
+    now: 20_000,
+    effectiveChangedAt: 1_000,
+    acknowledgedTime: 0,
+    wasNeedsAttention: false,
+    wasPossiblyDone: false,
+    inactivityMs: INACTIVITY_MS,
+    longInactivityMs: LONG_INACTIVITY_MS,
+    ...patch,
+  });
+}
+
+describe("terminalScreenshotStatus", () => {
+  it("marks an unacknowledged background tab as needing attention after it goes idle", () => {
+    expect(status()).toMatchObject({
+      nextNeedsAttention: true,
+      nextPossiblyDone: false,
+      nextLongInactive: false,
+    });
+  });
+
+  it("marks an acknowledged idle tab as possibly done", () => {
+    expect(status({ acknowledgedTime: 1_000, effectiveChangedAt: 1_000 })).toMatchObject({
+      nextNeedsAttention: false,
+      nextPossiblyDone: true,
+      nextLongInactive: false,
+    });
+  });
+
+  it("keeps a possibly-done tab brown across focus-only samples", () => {
+    expect(status({
+      isActiveTab: true,
+      wasPossiblyDone: true,
+      acknowledgedTime: 1_000,
+      effectiveChangedAt: 1_000,
+    })).toMatchObject({
+      shouldKeepBrownUntilInput: true,
+      nextNeedsAttention: false,
+      nextPossiblyDone: true,
+    });
+  });
+
+  it("clears brown when the screenshot monitor sees real visual progress", () => {
+    expect(status({
+      changed: true,
+      wasPossiblyDone: true,
+      acknowledgedTime: 1_000,
+      effectiveChangedAt: 15_000,
+    })).toMatchObject({
+      shouldKeepBrownUntilInput: false,
+      nextNeedsAttention: false,
+      nextPossiblyDone: false,
+      nextLongInactive: false,
+    });
+  });
+});

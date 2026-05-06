@@ -13,6 +13,7 @@ import {
   type TerminalVisualChangeSummary,
   type TerminalVisualTextSnapshot,
 } from "../lib/terminalScreenshotHash";
+import { resolveTerminalScreenshotStatus } from "../lib/terminalScreenshotStatus";
 import { debugLog, previewDebugText } from "../lib/debugLog";
 import { isDisconnectedTmuxPlaceholderTerminal } from "../lib/tmuxControl";
 import { useLayoutStore } from "../stores/useLayoutStore";
@@ -437,52 +438,26 @@ export function useTerminalScreenshotMonitor() {
             || lastOutputAt > 0;
           const acknowledgedTime = acknowledgedAt.get(tabRootTerminalId) ?? 0;
           const isActiveTab = activeTabRootTerminalId === tabRootTerminalId;
-          const hasAcknowledgedCurrentOutput =
-            hasDetectedActivity && acknowledgedTime >= effectiveChangedAt;
-          const idleStartedAt = hasAcknowledgedCurrentOutput
-            ? Math.max(effectiveChangedAt, acknowledgedTime)
-            : effectiveChangedAt;
-          const isNeedsAttention =
-            hasDetectedActivity &&
-            !isActiveTab &&
-            !changed &&
-            !hasAcknowledgedCurrentOutput &&
-            now - effectiveChangedAt >= SCREENSHOT_INACTIVITY_MS;
-          const isLongInactive =
-            hasDetectedActivity &&
-            !changed &&
-            now - idleStartedAt >= SCREENSHOT_LONG_INACTIVITY_MS;
-          const isPossiblyDone =
-            hasDetectedActivity &&
-            !changed &&
-            !isNeedsAttention &&
-            hasAcknowledgedCurrentOutput &&
-            !isLongInactive &&
-            now - idleStartedAt >= SCREENSHOT_INACTIVITY_MS;
-          const shouldKeepAttentionUntilFocus = latestSessions.some(
-            (session) => session.isNeedsAttention
-          );
-          const shouldKeepBrownUntilInput =
-            latestSessions.some((session) => session.isPossiblyDone);
-          const shouldRevertToGreen =
-            changed
-            && !shouldKeepAttentionUntilFocus
-            && !shouldKeepBrownUntilInput;
-          const nextNeedsAttention = shouldKeepAttentionUntilFocus
-            ? true
-            : shouldRevertToGreen
-              ? false
-              : shouldKeepBrownUntilInput
-                ? false
-                : (isNeedsAttention && !isLongInactive);
-          const nextPossiblyDone = shouldKeepAttentionUntilFocus
-            ? false
-            : shouldRevertToGreen
-              ? false
-              : shouldKeepBrownUntilInput
-                ? !isLongInactive
-                : isPossiblyDone;
-          const nextLongInactive = nextNeedsAttention ? false : isLongInactive;
+          const {
+            hasAcknowledgedCurrentOutput,
+            idleStartedAt,
+            shouldKeepAttentionUntilFocus,
+            shouldKeepBrownUntilInput,
+            nextNeedsAttention,
+            nextPossiblyDone,
+            nextLongInactive,
+          } = resolveTerminalScreenshotStatus({
+            hasDetectedActivity,
+            isActiveTab,
+            changed,
+            now,
+            effectiveChangedAt,
+            acknowledgedTime,
+            wasNeedsAttention: latestSessions.some((session) => session.isNeedsAttention),
+            wasPossiblyDone: latestSessions.some((session) => session.isPossiblyDone),
+            inactivityMs: SCREENSHOT_INACTIVITY_MS,
+            longInactivityMs: SCREENSHOT_LONG_INACTIVITY_MS,
+          });
           const statusDotSemantic = getStatusDotSemantic({
             hasDetectedActivity,
             nextNeedsAttention,
