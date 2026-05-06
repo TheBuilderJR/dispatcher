@@ -2631,20 +2631,8 @@ export function syncTmuxWindowSize(layoutId: string, widthPx: number, heightPx: 
   const activePane = session.panes.get(windowState.activePaneId) ?? null;
   const totalWindowGrid = getTmuxWindowGridSize(session, windowState.windowId);
   const viewportSize = getTerminalViewportSize(activePaneTerminalId);
-  const inferredWindowSize = activePane
-    ? computeTmuxWindowSizeFromPaneViewport({
-      viewportWidthPx: viewportSize?.width ?? 0,
-      viewportHeightPx: viewportSize?.height ?? 0,
-      cellWidthPx: cellSize.width,
-      cellHeightPx: cellSize.height,
-      activePaneCols: activePane.width,
-      activePaneRows: activePane.height,
-      totalWindowCols: totalWindowGrid.cols,
-      totalWindowRows: totalWindowGrid.rows,
-    })
-    : null;
-  const cols = inferredWindowSize?.cols ?? Math.max(2, Math.floor(widthPx / cellSize.width));
-  const rows = inferredWindowSize?.rows ?? Math.max(1, Math.floor(heightPx / cellSize.height));
+  const cols = Math.max(2, Math.floor(widthPx / cellSize.width));
+  const rows = Math.max(1, Math.floor(heightPx / cellSize.height));
   return applyTmuxWindowSize(session, windowState, cols, rows, {
     layoutId,
     activePaneTerminalId,
@@ -2658,7 +2646,7 @@ export function syncTmuxWindowSize(layoutId: string, widthPx: number, heightPx: 
     activePaneRows: activePane?.height ?? null,
     totalWindowCols: totalWindowGrid.cols,
     totalWindowRows: totalWindowGrid.rows,
-    source: inferredWindowSize ? "pane-viewport" : "outer-canvas",
+    source: "outer-canvas",
   });
 }
 
@@ -2694,6 +2682,26 @@ export function syncTmuxWindowSizeFromPaneTerminal(terminalId: string): boolean 
   }
 
   const totalWindowGrid = getTmuxWindowGridSize(session, pane.windowId);
+  const paneCount = [...session.panes.values()].filter((candidate) => candidate.windowId === pane.windowId).length;
+  if (paneCount > 1) {
+    debugLog("tmux.size", "skip pane viewport sync for split window", {
+      terminalId,
+      sessionId: session.id,
+      windowId: pane.windowId,
+      paneId: pane.paneId,
+      paneCount,
+      viewportWidthPx: viewportSize.width,
+      viewportHeightPx: viewportSize.height,
+      cellWidth: cellSize.width,
+      cellHeight: cellSize.height,
+      paneCols: pane.width,
+      paneRows: pane.height,
+      totalWindowCols: totalWindowGrid.cols,
+      totalWindowRows: totalWindowGrid.rows,
+    });
+    return false;
+  }
+
   const inferredWindowSize = computeTmuxWindowSizeFromPaneViewport({
     viewportWidthPx: viewportSize.width,
     viewportHeightPx: viewportSize.height,

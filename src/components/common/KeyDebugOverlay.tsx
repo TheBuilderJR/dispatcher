@@ -41,6 +41,24 @@ function formatScreenshotComponents(entry: ScreenshotDebugEntry): string | null 
     .join(", ");
 }
 
+function formatScreenshotChangeMetrics(entry: ScreenshotDebugEntry): string {
+  const rowRatio = entry.changedRowRatio !== undefined
+    ? ` rowRatio=${entry.changedRowRatio.toFixed(3)}`
+    : "";
+  const charRatio = entry.changedCharRatio !== undefined
+    ? ` charRatio=${entry.changedCharRatio.toFixed(3)}`
+    : "";
+  return [
+    `changed=${String(entry.changed)}`,
+    `exact=${String(entry.exactChanged ?? entry.changed)}`,
+    `repeat=${String(entry.repeatingHashOscillation ?? false)}`,
+    `three=${String(entry.hasThreeSamples ?? false)}`,
+    `rows=${entry.changedRows ?? "?"}`,
+    `chars=${entry.changedChars ?? "?"}`,
+    `${rowRatio}${charRatio}`.trim(),
+  ].filter(Boolean).join(" ");
+}
+
 function getScreenshotImageItems(
   entry: ScreenshotDebugEntry,
   sessions: Record<string, { title: string } | undefined>
@@ -138,7 +156,8 @@ export function KeyDebugOverlay() {
             formatScreenshotComponents(entry)
               ? `components=${formatScreenshotComponents(entry)}`
               : null,
-            `changed=${String(entry.changed)} detected=${String(entry.hasDetectedActivity)} attention=${String(entry.isNeedsAttention)} done=${String(entry.isPossiblyDone)} longInactive=${String(entry.isLongInactive)}`,
+            formatScreenshotChangeMetrics(entry),
+            `detected=${String(entry.hasDetectedActivity)} attention=${String(entry.isNeedsAttention)} done=${String(entry.isPossiblyDone)} longInactive=${String(entry.isLongInactive)}`,
           ].filter((line): line is string => line !== null).join("\n")),
         ].join("\n");
 
@@ -237,7 +256,7 @@ export function KeyDebugOverlay() {
                   formatScreenshotComponents(entry)
                     ? `components=${formatScreenshotComponents(entry)}`
                     : null,
-                  `changed=${String(entry.changed)}`,
+                  formatScreenshotChangeMetrics(entry),
                   `detected=${String(entry.hasDetectedActivity)}`,
                   `attention=${String(entry.isNeedsAttention)}`,
                   `done=${String(entry.isPossiblyDone)}`,

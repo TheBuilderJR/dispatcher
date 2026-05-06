@@ -35,6 +35,7 @@ import {
   createTmuxWindowForTerminal,
   resizeTmuxPaneByTerminal,
   routeTmuxTransportOutput,
+  syncTmuxWindowSize,
   syncTmuxWindowSizeFromPaneTerminal,
 } from "../tmuxControl";
 
@@ -481,6 +482,36 @@ describe("tmuxControl", () => {
     );
 
     expect(syncTmuxWindowSizeFromPaneTerminal(paneTerminalId)).toBe(false);
+  });
+
+  it("syncs tmux window size from the root canvas instead of stale pane ratios", async () => {
+    const transportTerminalId = "transport-root-canvas-resize";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSplitWindow(transportTerminalId);
+    writeTerminalMock.mockClear();
+
+    const windowTerminalId = getWindowTerminalIdByWindowId("@1");
+    expect(syncTmuxWindowSize(windowTerminalId, 640, 320)).toBe(true);
+    expect(writeTerminalMock).toHaveBeenLastCalledWith(
+      transportTerminalId,
+      "refresh-client -C 80x20\n"
+    );
+  });
+
+  it("does not let split pane resize observers fight the tmux window size", async () => {
+    const transportTerminalId = "transport-split-pane-resize-skip";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSplitWindow(transportTerminalId);
+    writeTerminalMock.mockClear();
+
+    const leftPaneTerminalId = getPaneTerminalIdByPaneId("%1");
+    expect(syncTmuxWindowSizeFromPaneTerminal(leftPaneTerminalId)).toBe(false);
+    expect(writeTerminalMock).not.toHaveBeenCalledWith(
+      transportTerminalId,
+      "refresh-client -C 80x24\n"
+    );
   });
 
   it("redraws tmux panes when a layout refresh changes pane geometry", async () => {

@@ -19,7 +19,7 @@ import { useFontStore } from "../stores/useFontStore";
 import { useColorSchemeStore } from "../stores/useColorSchemeStore";
 import { buildFontFamilyCSS } from "../components/common/FontSettings";
 import { findLayoutKeyForTerminal } from "../lib/layoutUtils";
-import { getTabStatusTerminalIds } from "../lib/terminalScreenshotHash";
+import { getTabStatusTerminalIds, type TerminalVisualTextSnapshot } from "../lib/terminalScreenshotHash";
 import { useLayoutStore } from "../stores/useLayoutStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 import { describeKeyboardEvent, describeTerminalData, pushKeyDebug } from "../lib/keyDebug";
@@ -40,6 +40,10 @@ interface TerminalInstance {
   element: HTMLDivElement;
   lastWidth: number;
   lastHeight: number;
+}
+
+export interface CapturedTerminalVisualSnapshot extends TerminalVisualTextSnapshot {
+  imageDataUrl: string;
 }
 
 interface SyntheticInputSuppression {
@@ -691,9 +695,56 @@ function renderTerminalBufferScreenshot(instance: TerminalInstance): string | nu
   return canvas.toDataURL("image/png");
 }
 
+function readTerminalVisualTextSnapshot(
+  terminalId: string,
+  instance: TerminalInstance
+): TerminalVisualTextSnapshot {
+  const { xterm } = instance;
+  const buffer = xterm.buffer.active;
+  const lines: string[] = [];
+
+  for (let row = 0; row < xterm.rows; row += 1) {
+    const line = buffer.getLine(buffer.viewportY + row);
+    lines.push(line?.translateToString(false) ?? "");
+  }
+
+  return {
+    terminalId,
+    cols: xterm.cols,
+    rows: xterm.rows,
+    lines,
+  };
+}
+
 /** Focus the xterm instance for a given terminal (e.g. after renaming). */
 export function focusTerminalInstance(terminalId: string) {
   instances.get(terminalId)?.xterm.focus();
+}
+
+function getTerminalMountContentSize(mountPoint: HTMLElement): { width: number; height: number } {
+  const style = window.getComputedStyle(mountPoint);
+  const parsedWidth = Number.parseFloat(style.width);
+  const parsedHeight = Number.parseFloat(style.height);
+  if (
+    Number.isFinite(parsedWidth)
+    && parsedWidth > 0
+    && Number.isFinite(parsedHeight)
+    && parsedHeight > 0
+  ) {
+    return { width: parsedWidth, height: parsedHeight };
+  }
+
+  const rect = mountPoint.getBoundingClientRect();
+  const paddingX =
+    Number.parseFloat(style.paddingLeft || "0")
+    + Number.parseFloat(style.paddingRight || "0");
+  const paddingY =
+    Number.parseFloat(style.paddingTop || "0")
+    + Number.parseFloat(style.paddingBottom || "0");
+  return {
+    width: Math.max(0, rect.width - paddingX),
+    height: Math.max(0, rect.height - paddingY),
+  };
 }
 
 export function syncTerminalFrontendSize(terminalId: string, cols: number, rows: number) {
@@ -712,13 +763,61 @@ export function syncTerminalFrontendSize(terminalId: string, cols: number, rows:
     return;
   }
 
+  const mountPoint = instance.element.parentElement as HTMLElement | null;
+  const dimensions = (instance.xterm as Terminal & {
+    _core?: {
+      _renderService?: {
+        dimensions?: {
+          css: {
+            cell: {
+              width: number;
+              height: number;
+            };
+          };
+        };
+      };
+    };
+  })._core?._renderService?.dimensions;
+  const viewportSize = mountPoint && mountPoint.id !== PARKING_ROOT_ID
+    ? getTerminalMountContentSize(mountPoint)
+    : null;
+  const viewportWidth = viewportSize?.width ?? null;
+  const viewportHeight = viewportSize?.height ?? null;
+  const cellWidth = dimensions?.css.cell.width ?? null;
+  const cellHeight = dimensions?.css.cell.height ?? null;
+  const requiredWidth = cellWidth ? nextCols * cellWidth : null;
+  const requiredHeight = cellHeight ? nextRows * cellHeight : null;
+  const overflowX = viewportWidth !== null && requiredWidth !== null ? requiredWidth - viewportWidth : null;
+  const overflowY = viewportHeight !== null && requiredHeight !== null ? requiredHeight - viewportHeight : null;
+
   debugLog("terminal.frontend", "resize", {
     terminalId,
     previousCols: instance.xterm.cols,
     previousRows: instance.xterm.rows,
     cols: nextCols,
     rows: nextRows,
+    viewportWidth,
+    viewportHeight,
+    cellWidth,
+    cellHeight,
+    requiredWidth,
+    requiredHeight,
+    overflowX,
+    overflowY,
   });
+  if (overflowX !== null && overflowY !== null && (overflowX > 1 || overflowY > 1)) {
+    debugLog("terminal.frontend", "grid exceeds viewport", {
+      terminalId,
+      cols: nextCols,
+      rows: nextRows,
+      viewportWidth,
+      viewportHeight,
+      requiredWidth,
+      requiredHeight,
+      overflowX,
+      overflowY,
+    });
+  }
   instance.xterm.resize(nextCols, nextRows);
 }
 
@@ -763,8 +862,7 @@ export function getTerminalViewportSize(terminalId: string): { width: number; he
     return null;
   }
 
-  const width = mountPoint.clientWidth;
-  const height = mountPoint.clientHeight;
+  const { width, height } = getTerminalMountContentSize(mountPoint);
   if (width <= 0 || height <= 0) {
     return null;
   }
@@ -782,6 +880,23 @@ export function captureTerminalScreenshot(terminalId: string): string | null {
     renderTerminalBufferScreenshot(instance) ??
     captureCanvasScreenshot(instance.element, instance.lastWidth, instance.lastHeight)
   );
+}
+
+export function captureTerminalVisualSnapshot(terminalId: string): CapturedTerminalVisualSnapshot | null {
+  const instance = instances.get(terminalId);
+  if (!instance) {
+    return null;
+  }
+
+  const imageDataUrl = captureTerminalScreenshot(terminalId);
+  if (imageDataUrl === null) {
+    return null;
+  }
+
+  return {
+    ...readTerminalVisualTextSnapshot(terminalId, instance),
+    imageDataUrl,
+  };
 }
 
 export function sendSyntheticTerminalInput(terminalId: string, data: string) {

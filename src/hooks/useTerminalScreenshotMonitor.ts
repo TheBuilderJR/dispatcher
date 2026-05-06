@@ -1,12 +1,15 @@
 import { useEffect } from "react";
-import { captureTerminalScreenshot, ensureTerminalScreenshotTarget } from "./useTerminalBridge";
+import { captureTerminalVisualSnapshot, ensureTerminalScreenshotTarget } from "./useTerminalBridge";
 import { findLayoutKeyForTerminal } from "../lib/layoutUtils";
 import { pushScreenshotDebug } from "../lib/screenshotDebug";
 import {
   buildCompoundScreenshotHashInput,
+  buildTerminalVisualHashInput,
   getTabRootTerminalIds,
   getTabStatusTerminalIds,
   getTabTerminalIds,
+  summarizeTerminalVisualChange,
+  type TerminalVisualTextSnapshot,
 } from "../lib/terminalScreenshotHash";
 import { debugLog } from "../lib/debugLog";
 import { isDisconnectedTmuxPlaceholderTerminal } from "../lib/tmuxControl";
@@ -36,6 +39,8 @@ function getActiveTabRootTerminalId(): string | null {
 export function useTerminalScreenshotMonitor() {
   useEffect(() => {
     const previousHashes = new Map<string, string>();
+    const previousComponents = new Map<string, TerminalVisualTextSnapshot[]>();
+    const recentHashes = new Map<string, string[]>();
     const previousTabSignatures = new Map<string, string>();
     const previousStatusSnapshots = new Map<string, string>();
     const lastChangedAt = new Map<string, number>();
@@ -46,6 +51,8 @@ export function useTerminalScreenshotMonitor() {
 
     const clearTabState = (tabRootTerminalId: string) => {
       previousHashes.delete(tabRootTerminalId);
+      previousComponents.delete(tabRootTerminalId);
+      recentHashes.delete(tabRootTerminalId);
       previousTabSignatures.delete(tabRootTerminalId);
       previousStatusSnapshots.delete(tabRootTerminalId);
       lastChangedAt.delete(tabRootTerminalId);
@@ -115,7 +122,11 @@ export function useTerminalScreenshotMonitor() {
             continue;
           }
 
-          const screenshots: Array<{ terminalId: string; screenshot: string }> = [];
+          const screenshots: Array<{
+            terminalId: string;
+            screenshot: string;
+            snapshot: TerminalVisualTextSnapshot;
+          }> = [];
           let isReady = true;
           for (const terminalId of terminalIds) {
             const session = useTerminalStore.getState().sessions[terminalId];
@@ -130,13 +141,22 @@ export function useTerminalScreenshotMonitor() {
             }
 
             ensureTerminalScreenshotTarget(terminalId, session.cwd);
-            const screenshot = captureTerminalScreenshot(terminalId);
-            if (screenshot === null) {
+            const visualSnapshot = captureTerminalVisualSnapshot(terminalId);
+            if (visualSnapshot === null) {
               isReady = false;
               break;
             }
 
-            screenshots.push({ terminalId, screenshot });
+            screenshots.push({
+              terminalId,
+              screenshot: visualSnapshot.imageDataUrl,
+              snapshot: {
+                terminalId: visualSnapshot.terminalId,
+                cols: visualSnapshot.cols,
+                rows: visualSnapshot.rows,
+                lines: visualSnapshot.lines,
+              },
+            });
           }
 
           if (!isReady || screenshots.length !== terminalIds.length) {
@@ -144,7 +164,7 @@ export function useTerminalScreenshotMonitor() {
           }
 
           const componentHashes = await Promise.all(
-            screenshots.map(({ screenshot }) => hashScreenshot(screenshot))
+            screenshots.map(({ snapshot }) => hashScreenshot(buildTerminalVisualHashInput(snapshot)))
           );
           const hash =
             componentHashes.length === 1
@@ -163,11 +183,20 @@ export function useTerminalScreenshotMonitor() {
           }
 
           const previousHash = previousHashes.get(tabRootTerminalId) ?? null;
+          const previousComponentSnapshots = previousComponents.get(tabRootTerminalId) ?? [];
+          const recentTabHashes = recentHashes.get(tabRootTerminalId) ?? [];
           const tabSignature = terminalIds.join("|");
           const previousTabSignature = previousTabSignatures.get(tabRootTerminalId) ?? null;
           const isBaselineCapture =
             previousHash === null || previousTabSignature !== tabSignature;
-          const changed = !isBaselineCapture && previousHash !== hash;
+          const visualChange = summarizeTerminalVisualChange({
+            previousComponents: isBaselineCapture ? [] : previousComponentSnapshots,
+            currentComponents: screenshots.map(({ snapshot }) => snapshot),
+            previousHash: isBaselineCapture ? null : previousHash,
+            currentHash: hash,
+            recentHashes: isBaselineCapture ? [] : recentTabHashes,
+          });
+          const changed = !isBaselineCapture && visualChange.changed;
           const changedAt =
             changed || isBaselineCapture
               ? now
@@ -259,6 +288,13 @@ export function useTerminalScreenshotMonitor() {
               effectiveChangedAt,
               acknowledgedTime,
               idleStartedAt,
+              exactChanged: visualChange.exactChanged,
+              repeatingHashOscillation: visualChange.repeatingHashOscillation,
+              hasThreeSamples: visualChange.hasThreeSamples,
+              changedRows: visualChange.changedRows,
+              changedChars: visualChange.changedChars,
+              changedRowRatio: visualChange.changedRowRatio,
+              changedCharRatio: visualChange.changedCharRatio,
               nextNeedsAttention,
               nextPossiblyDone,
               nextLongInactive,
@@ -268,6 +304,11 @@ export function useTerminalScreenshotMonitor() {
           }
 
           previousHashes.set(tabRootTerminalId, hash);
+          previousComponents.set(
+            tabRootTerminalId,
+            screenshots.map(({ snapshot }) => snapshot)
+          );
+          recentHashes.set(tabRootTerminalId, [...recentTabHashes, hash].slice(-2));
           previousTabSignatures.set(tabRootTerminalId, tabSignature);
           lastChangedAt.set(tabRootTerminalId, changedAt);
           for (const terminalId of statusTerminalIds) {
@@ -281,6 +322,13 @@ export function useTerminalScreenshotMonitor() {
             hash,
             previousHash,
             changed,
+            exactChanged: visualChange.exactChanged,
+            repeatingHashOscillation: visualChange.repeatingHashOscillation,
+            hasThreeSamples: visualChange.hasThreeSamples,
+            changedRows: visualChange.changedRows,
+            changedChars: visualChange.changedChars,
+            changedRowRatio: visualChange.changedRowRatio,
+            changedCharRatio: visualChange.changedCharRatio,
             hasDetectedActivity,
             isNeedsAttention: nextNeedsAttention,
             isPossiblyDone: nextPossiblyDone,

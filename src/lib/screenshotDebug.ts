@@ -10,6 +10,13 @@ export interface ScreenshotDebugEntry {
   componentHashes?: string[];
   componentImageDataUrls?: string[];
   changed: boolean;
+  exactChanged?: boolean;
+  repeatingHashOscillation?: boolean;
+  hasThreeSamples?: boolean;
+  changedRows?: number;
+  changedChars?: number;
+  changedRowRatio?: number;
+  changedCharRatio?: number;
   hasDetectedActivity: boolean;
   isNeedsAttention: boolean;
   isPossiblyDone: boolean;
