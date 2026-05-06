@@ -483,6 +483,72 @@ describe("tmuxControl", () => {
     expect(syncTmuxWindowSizeFromPaneTerminal(paneTerminalId)).toBe(false);
   });
 
+  it("redraws tmux panes when a layout refresh changes pane geometry", async () => {
+    const transportTerminalId = "transport-layout-redraw";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSplitWindow(transportTerminalId);
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    const leftPaneTerminalId = getPaneTerminalIdByPaneId("%1");
+    const rightPaneTerminalId = getPaneTerminalIdByPaneId("%2");
+
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @1\n");
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 5 0",
+        "@1\thappy\t1\t*",
+        "%end 5 0",
+        "%begin 6 0",
+        "@1\t%1\t0\t0\t50\t24\t1\t/Users/bobren/left\t4\t7\t0\t0",
+        "@1\t%2\t50\t0\t30\t24\t0\t/Users/bobren/right\t1\t2\t0\t0",
+        "%end 6 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %2\n"
+    );
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 7 0",
+        "left clean",
+        "%end 7 0",
+        "%begin 8 0",
+        "right clean",
+        "%end 8 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      leftPaneTerminalId,
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jleft clean\u001b[?7h\u001b[0m\u001b[8;5H"
+    );
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      rightPaneTerminalId,
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jright clean\u001b[?7h\u001b[0m\u001b[3;2H"
+    );
+  });
+
   it("keeps user tmux split drag layout until resize-pane settles", async () => {
     const transportTerminalId = "transport-user-resize-lock";
     seedTransportTerminal(transportTerminalId);

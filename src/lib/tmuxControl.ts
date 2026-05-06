@@ -91,6 +91,10 @@ interface TmuxPaneState {
   initialContentCaptured: boolean;
 }
 
+interface WindowProjectionResult {
+  changedPaneIds: Set<string>;
+}
+
 interface TmuxControlSession {
   id: string;
   transportTerminalId: string;
@@ -1013,14 +1017,14 @@ function upsertWindowProjection(
   options?: {
     preserveLayout?: boolean;
   }
-) {
+): WindowProjectionResult | null {
   if (panes.length === 0) {
     debugLog("tmux.session", "skip window projection with no panes", {
       sessionId: session.id,
       windowId: snapshot.windowId,
       title: snapshot.title,
     });
-    return;
+    return null;
   }
 
   let windowState = session.windows.get(snapshot.windowId);
@@ -1112,8 +1116,10 @@ function upsertWindowProjection(
   }
 
   const layoutPanes: TmuxPaneLayoutRecord[] = [];
+  const changedPaneIds = new Set<string>();
   for (const paneSnapshot of panes) {
     let paneState = session.panes.get(paneSnapshot.paneId);
+    const existingPaneState = paneState;
     if (!paneState) {
       const placeholderTerminalId = disconnectedPanePlaceholders.get(paneSnapshot.paneId);
       const terminalId = placeholderTerminalId ?? generateId();
@@ -1177,6 +1183,18 @@ function upsertWindowProjection(
           queueTerminalOutput(terminalId, unescapeTmuxOutput(value));
         }
       }
+    }
+
+    if (
+      existingPaneState
+      && (
+        existingPaneState.left !== paneSnapshot.left
+        || existingPaneState.top !== paneSnapshot.top
+        || existingPaneState.width !== paneSnapshot.width
+        || existingPaneState.height !== paneSnapshot.height
+      )
+    ) {
+      changedPaneIds.add(paneSnapshot.paneId);
     }
 
     syncTerminalFrontendSize(paneState.terminalId, paneSnapshot.width, paneSnapshot.height);
@@ -1254,10 +1272,11 @@ function upsertWindowProjection(
       terminalId: windowState.terminalId,
       panes: layoutPanes.length,
     });
-    return;
+    return { changedPaneIds: new Set() };
   }
 
   setLayout(windowState.terminalId, buildLayoutFromTmuxPanes(layoutPanes));
+  return { changedPaneIds };
 }
 
 function setFocusedTmuxPane(
@@ -1510,19 +1529,25 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
   }
 
   const preserveUserPaneLayout = isTmuxWindowUserPaneResizeLocked(session, snapshot.windowId);
-  upsertWindowProjection(session, snapshot, paneSnapshots, {
+  const projection = upsertWindowProjection(session, snapshot, paneSnapshots, {
     preserveLayout: preserveUserPaneLayout,
   });
   syncWindowNodeOrder(session);
 
-  if (session.pendingWindowRedraws.delete(snapshot.windowId)) {
-    const paneStates = paneSnapshots
-      .map((paneSnapshot) => session.panes.get(paneSnapshot.paneId))
-      .filter((pane): pane is TmuxPaneState => Boolean(pane));
+  const shouldRedrawWindow = session.pendingWindowRedraws.delete(snapshot.windowId);
+  const paneStates = paneSnapshots
+    .map((paneSnapshot) => session.panes.get(paneSnapshot.paneId))
+    .filter((pane): pane is TmuxPaneState => Boolean(pane));
+  const paneStatesToRedraw = shouldRedrawWindow
+    ? paneStates
+    : paneStates.filter((pane) => projection?.changedPaneIds.has(pane.paneId));
+
+  if (paneStatesToRedraw.length > 0) {
+    const reason = shouldRedrawWindow ? "resize" : "layout-change";
     void Promise.all(
-      paneStates.map((pane) => redrawVisiblePaneContent(session, pane, "resize"))
+      paneStatesToRedraw.map((pane) => redrawVisiblePaneContent(session, pane, reason))
     ).catch((error) => {
-      debugLogError("tmux.capture", "resize pane redraw failed", error);
+      debugLogError("tmux.capture", `${reason} pane redraw failed`, error);
     });
   }
 
