@@ -2,7 +2,7 @@ use crate::errors::PtyError;
 use crate::pty_manager::{PtyManager, TerminalDebugInfo, TerminalOutput};
 use std::fs;
 #[allow(unused_imports)]
-use tauri::{ipc::Channel, AppHandle, State};
+use tauri::{ipc::Channel, AppHandle, Manager, State};
 
 fn preview_terminal_data(data: &str, limit: usize) -> String {
     let mut preview = String::new();
@@ -206,6 +206,43 @@ pub fn write_debug_artifact(file_name: String, content: String) -> Result<String
     fs::write(&path, content)?;
 
     Ok(path.display().to_string())
+}
+
+fn app_state_backup_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, PtyError> {
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|err| PtyError::from(err.to_string()))?;
+    Ok(dir.join("dispatcher-state-backup.json"))
+}
+
+#[tauri::command]
+pub fn read_app_state_backup(app_handle: AppHandle) -> Result<Option<String>, PtyError> {
+    let path = app_state_backup_path(&app_handle)?;
+    match fs::read_to_string(&path) {
+        Ok(content) => Ok(Some(content)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(PtyError::from(err)),
+    }
+}
+
+#[tauri::command]
+pub fn write_app_state_backup(app_handle: AppHandle, content: String) -> Result<String, PtyError> {
+    let path = app_state_backup_path(&app_handle)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, content)?;
+    fs::rename(&tmp_path, &path)?;
+
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
+pub fn get_app_state_backup_path(app_handle: AppHandle) -> Result<String, PtyError> {
+    Ok(app_state_backup_path(&app_handle)?.display().to_string())
 }
 
 #[tauri::command]

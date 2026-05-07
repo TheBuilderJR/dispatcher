@@ -10,6 +10,9 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     host: host || false,
+    fs: {
+      allow: [process.cwd(), "/tmp"],
+    },
     hmr: host
       ? {
           protocol: "ws",

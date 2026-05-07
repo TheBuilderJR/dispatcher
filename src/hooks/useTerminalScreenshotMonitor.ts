@@ -1,6 +1,5 @@
 import { useEffect } from "react";
 import {
-  captureTerminalScreenshot,
   captureTerminalVisualSnapshot,
   ensureTerminalScreenshotTarget,
 } from "./useTerminalBridge";
@@ -353,12 +352,27 @@ export function useTerminalScreenshotMonitor() {
         const relatedTabRootTerminalIds = tmuxControlSessionIds.size > 0
           ? getTabRootTerminalIds(layouts, sessionIds).filter((rootTerminalId) => {
               const rootStatusTerminalIds = getTabStatusTerminalIds(layouts, rootTerminalId, sessionIds);
-              return rootStatusTerminalIds.some((terminalId) => {
-                const session = store.sessions[terminalId];
-                return Boolean(
-                  session?.tmuxControlSessionId
-                  && tmuxControlSessionIds.has(session.tmuxControlSessionId)
-                );
+              const rootStatusSessions = rootStatusTerminalIds
+                .map((terminalId) => store.sessions[terminalId])
+                .filter((session): session is TerminalSession => session !== undefined);
+              return rootStatusSessions.some((session) => {
+                if (!isTmuxStatusSession(session)) {
+                  return false;
+                }
+
+                if (!session.tmuxControlSessionId) {
+                  return true;
+                }
+
+                if (tmuxControlSessionIds.has(session.tmuxControlSessionId)) {
+                  return true;
+                }
+
+                // A tmux focus/resize refresh can fan out as layout notifications on
+                // sibling control sessions attached to the same server. We suppress
+                // all tmux roots briefly so that redraw-only churn does not clear
+                // background brown/attention state.
+                return true;
               });
             })
           : [tabRootTerminalId];
@@ -633,19 +647,13 @@ export function useTerminalScreenshotMonitor() {
             && now - lastArtifactTime >= SCREENSHOT_ARTIFACT_INTERVAL_MS;
           if (shouldWriteScreenshotArtifact) {
             lastArtifactAt.set(tabRootTerminalId, now);
-            const artifactScreenshots = screenshots.map((sample, index) => ({
-              ...sample,
-              screenshot: index < MAX_SCREENSHOT_ARTIFACT_COMPONENTS
-                ? captureTerminalScreenshot(sample.terminalId) ?? undefined
-                : undefined,
-            }));
             void writeScreenshotDebugArtifacts({
               now,
               tabRootTerminalId,
               activeTabRootTerminalId,
               terminalIds,
               statusTerminalIds,
-              screenshots: artifactScreenshots,
+              screenshots,
               componentHashes,
               hash,
               previousHash,

@@ -14,8 +14,11 @@ import { findTerminalIds, findLayoutKeyForTerminal, findSiblingTerminalId } from
 import { closeTerminal, warmPool, refreshPool, getTerminalCwd, writeTerminal } from "./lib/tauriCommands";
 import { disposeTerminalInstance } from "./hooks/useTerminalBridge";
 import { useFileDrop } from "./hooks/useFileDrop";
+import { useAppStateBackup } from "./hooks/useAppStateBackup";
+import { useRecoveryBootstrap } from "./hooks/useRecoveryBootstrap";
 import { useStartupStoreNormalization } from "./hooks/useStartupStoreNormalization";
 import { useTerminalScreenshotMonitor } from "./hooks/useTerminalScreenshotMonitor";
+import { debugLog } from "./lib/debugLog";
 import {
   closeTmuxTerminal,
   createTmuxWindowForTerminal,
@@ -79,7 +82,33 @@ export default function App() {
 
   useFileDrop();
   useStartupStoreNormalization();
+  useAppStateBackup();
+  useRecoveryBootstrap();
   useTerminalScreenshotMonitor();
+
+  useEffect(() => {
+    const logStartupState = (phase: string) => {
+      debugLog("app.runtime", phase, {
+        projects: Object.keys(useProjectStore.getState().projects).length,
+        projectOrder: useProjectStore.getState().projectOrder.length,
+        nodes: Object.keys(useProjectStore.getState().nodes).length,
+        sessions: Object.keys(useTerminalStore.getState().sessions).length,
+        layouts: Object.keys(useLayoutStore.getState().layouts).length,
+        activeProjectId: useProjectStore.getState().activeProjectId,
+        activeTerminalId: useTerminalStore.getState().activeTerminalId,
+        localStorageLength: window.localStorage.length,
+        localStorageKeys: Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.key(index))
+          .filter((key): key is string => key !== null && key.startsWith("dispatcher")),
+        hasPersistedProjects: window.localStorage.getItem("dispatcher-projects") !== null,
+        hasPersistedTerminals: window.localStorage.getItem("dispatcher-terminals") !== null,
+        hasPersistedLayouts: window.localStorage.getItem("dispatcher-layouts") !== null,
+      });
+    };
+
+    logStartupState("mounted");
+    const hydrationCheck = window.setTimeout(() => logStartupState("mounted after hydration delay"), 1_000);
+    return () => window.clearTimeout(hydrationCheck);
+  }, []);
 
   const resolvedActiveProjectId = (() => {
     if (activeProjectId && projects[activeProjectId]) {

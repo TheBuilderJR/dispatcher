@@ -30,6 +30,9 @@ pub fn run() {
             commands::append_debug_log,
             commands::get_debug_log_path,
             commands::write_debug_artifact,
+            commands::read_app_state_backup,
+            commands::write_app_state_backup,
+            commands::get_app_state_backup_path,
             commands::show_font_panel,
             commands::hide_font_panel,
         ])

@@ -107,7 +107,25 @@ export function debugLogError(scope: string, message: string, error: unknown) {
 }
 
 if (typeof window !== "undefined") {
+  window.addEventListener("error", (event) => {
+    debugLog("app.runtime", "window error", {
+      message: event.message,
+      filename: event.filename,
+      lineno: event.lineno,
+      colno: event.colno,
+      error: event.error instanceof Error ? event.error.stack ?? event.error.message : summarizeValue(event.error),
+    });
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason;
+    debugLog("app.runtime", "unhandled rejection", {
+      reason: reason instanceof Error ? reason.stack ?? reason.message : summarizeValue(reason),
+    });
+  });
+
   window.addEventListener("beforeunload", () => {
+    debugLog("app.runtime", "beforeunload");
     flushPendingLines();
   });
 }

@@ -90,3 +90,15 @@ export async function writeDebugArtifact(
 ): Promise<string> {
   return await invoke("write_debug_artifact", { fileName, content });
 }
+
+export async function readAppStateBackup(): Promise<string | null> {
+  return await invoke("read_app_state_backup");
+}
+
+export async function writeAppStateBackup(content: string): Promise<string> {
+  return await invoke("write_app_state_backup", { content });
+}
+
+export async function getAppStateBackupPath(): Promise<string> {
+  return await invoke("get_app_state_backup_path");
+}

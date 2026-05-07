@@ -40,8 +40,7 @@ pub fn init_debug_log() -> Result<(), PtyError> {
 
     let mut file = OpenOptions::new()
         .create(true)
-        .write(true)
-        .truncate(true)
+        .append(true)
         .open(&path)
         .map_err(PtyError::from)?;
 

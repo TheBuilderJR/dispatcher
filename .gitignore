@@ -20,3 +20,6 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Local recovery data
+public/dispatcher-recovery.json
