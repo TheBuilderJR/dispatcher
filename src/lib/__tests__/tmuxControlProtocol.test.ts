@@ -88,7 +88,7 @@ describe("tmuxControlProtocol", () => {
     expect(buildTmuxPaneSnapshotCommand({ targetWindowId: "@24" })).toBe(
       'list-panes -t @24 -F "#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}\\t#{history_size}"'
     );
-    expect(buildTmuxPaneCaptureCommand({ paneId: "%3" })).toBe("capture-pane -p -e -C -S -1000000 -t %3");
+    expect(buildTmuxPaneCaptureCommand({ paneId: "%3" })).toBe("capture-pane -p -e -C -S -50000 -t %3");
     expect(buildTmuxPaneCaptureCommand({ paneId: "%3", historySize: 42 })).toBe(
       "capture-pane -p -e -C -S -42 -t %3"
     );

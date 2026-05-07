@@ -121,10 +121,20 @@ interface TmuxControlSession {
   pendingNewWindowAnchors: PendingNewWindowAnchor[];
   pendingNewWindowActivations: Map<string, string>;
   windowSizes: Map<string, string>;
+  clientSize: string | null;
+  clientResizeLayoutSuppressionWindowId: string | null;
+  clientResizeLayoutSuppressionUntil: number;
+  clientResizeLayoutSuppressedCount: number;
   pendingWindowRedraws: Set<string>;
   userPaneResizeLocks: Map<string, number>;
   outputLogCount: number;
   outputLogSuppressed: boolean;
+  transportLogCount: number;
+  transportLogSuppressed: boolean;
+  transportSummaryChunks: number;
+  transportSummaryBytes: number;
+  transportSummaryPassthroughBytes: number;
+  transportSummaryLastLoggedAt: number;
   needsBootstrapRefresh: boolean;
   pendingPaneOutput: Map<string, string[]>;
   pendingInitialPaneCaptures: string[];
@@ -184,10 +194,15 @@ const windowTerminalToSessionId = tmuxRuntime.windowTerminalToSessionId;
 const transportTerminalToSessionId = tmuxRuntime.transportTerminalToSessionId;
 const transportRawCarry = tmuxRuntime.transportRawCarry;
 const TMUX_OUTPUT_LOG_LIMIT = 25;
+const TMUX_TRANSPORT_LOG_LIMIT = 25;
+const TMUX_TRANSPORT_SUMMARY_INTERVAL_MS = 5_000;
 const TMUX_BOOTSTRAP_FALLBACK_DELAY_MS = 100;
 const TMUX_USER_PANE_RESIZE_LOCK_MS = 4_000;
 const TMUX_INITIAL_CAPTURE_BACKGROUND_DELAY_MS = 250;
 const TMUX_INITIAL_CAPTURE_RETRY_DELAY_MS = 50;
+const TMUX_PENDING_PANE_OUTPUT_MAX_CHUNKS = 512;
+const TMUX_PENDING_PANE_OUTPUT_MAX_CHARS = 2_000_000;
+const TMUX_CLIENT_RESIZE_LAYOUT_SUPPRESSION_MS = 1_000;
 const TMUX_CONTROL_LINE_PREFIXES = [
   "%begin",
   "%client-",
@@ -210,6 +225,162 @@ function ensureInitialPaneCaptureState(session: TmuxControlSession) {
   session.pendingInitialPaneCaptures ??= [];
   session.initialPaneCaptureTimer ??= null;
   session.initialPaneCaptureActive ??= false;
+}
+
+function ensureTransportLogState(session: TmuxControlSession) {
+  session.transportLogCount ??= 0;
+  session.transportLogSuppressed ??= false;
+  session.transportSummaryChunks ??= 0;
+  session.transportSummaryBytes ??= 0;
+  session.transportSummaryPassthroughBytes ??= 0;
+  session.transportSummaryLastLoggedAt ??= 0;
+}
+
+function ensureTmuxClientSizeState(session: TmuxControlSession) {
+  session.clientSize ??= null;
+  session.clientResizeLayoutSuppressionWindowId ??= null;
+  session.clientResizeLayoutSuppressionUntil ??= 0;
+  session.clientResizeLayoutSuppressedCount ??= 0;
+}
+
+function markTmuxClientSize(session: TmuxControlSession, nextSize: string) {
+  ensureTmuxClientSizeState(session);
+  session.clientSize = nextSize;
+  for (const windowState of session.windows.values()) {
+    session.windowSizes.set(windowState.windowId, nextSize);
+  }
+}
+
+function beginTmuxClientResizeLayoutSuppression(
+  session: TmuxControlSession,
+  targetWindowId: string
+) {
+  ensureTmuxClientSizeState(session);
+  session.clientResizeLayoutSuppressionWindowId = targetWindowId;
+  session.clientResizeLayoutSuppressionUntil = Date.now() + TMUX_CLIENT_RESIZE_LAYOUT_SUPPRESSION_MS;
+  session.clientResizeLayoutSuppressedCount = 0;
+}
+
+function shouldSuppressTmuxLayoutChange(
+  session: TmuxControlSession,
+  windowId: string
+): boolean {
+  ensureTmuxClientSizeState(session);
+  const targetWindowId = session.clientResizeLayoutSuppressionWindowId;
+  if (!targetWindowId) {
+    return false;
+  }
+
+  if (Date.now() > session.clientResizeLayoutSuppressionUntil) {
+    session.clientResizeLayoutSuppressionWindowId = null;
+    session.clientResizeLayoutSuppressionUntil = 0;
+    session.clientResizeLayoutSuppressedCount = 0;
+    return false;
+  }
+
+  if (windowId === targetWindowId || !session.windows.has(windowId)) {
+    return false;
+  }
+
+  session.clientResizeLayoutSuppressedCount += 1;
+  if (
+    session.clientResizeLayoutSuppressedCount <= 3
+    || session.clientResizeLayoutSuppressedCount === 10
+  ) {
+    debugLog("tmux.refresh", "suppress background layout change during client resize", {
+      sessionId: session.id,
+      windowId,
+      targetWindowId,
+      suppressedCount: session.clientResizeLayoutSuppressedCount,
+    });
+  }
+  return true;
+}
+
+function maybeLogTmuxTransportSummary(
+  session: TmuxControlSession,
+  terminalId: string,
+  remainingCarryLength?: number
+) {
+  ensureTransportLogState(session);
+  if (!session.transportLogSuppressed) {
+    return;
+  }
+
+  const now = Date.now();
+  if (session.transportSummaryLastLoggedAt <= 0) {
+    session.transportSummaryLastLoggedAt = now;
+    return;
+  }
+  if (now - session.transportSummaryLastLoggedAt < TMUX_TRANSPORT_SUMMARY_INTERVAL_MS) {
+    return;
+  }
+
+  debugLog("tmux.transport", "chunk summary", {
+    sessionId: session.id,
+    terminalId,
+    chunks: session.transportSummaryChunks,
+    bytes: session.transportSummaryBytes,
+    passthroughBytes: session.transportSummaryPassthroughBytes,
+    remainingCarryLength: remainingCarryLength ?? null,
+    intervalMs: now - session.transportSummaryLastLoggedAt,
+  });
+  session.transportSummaryChunks = 0;
+  session.transportSummaryBytes = 0;
+  session.transportSummaryPassthroughBytes = 0;
+  session.transportSummaryLastLoggedAt = now;
+}
+
+function debugTmuxTransportChunk(
+  session: TmuxControlSession,
+  terminalId: string,
+  data: string,
+  carryLength: number,
+  existingSessionId: string | null
+) {
+  ensureTransportLogState(session);
+  session.transportSummaryChunks += 1;
+  session.transportSummaryBytes += data.length;
+
+  if (session.transportLogCount < TMUX_TRANSPORT_LOG_LIMIT) {
+    session.transportLogCount += 1;
+    debugLog("tmux.transport", "chunk", {
+      terminalId,
+      existingSessionId,
+      carryLength,
+      bytes: data.length,
+      preview: previewDebugText(data, 200),
+    });
+    return;
+  }
+
+  if (!session.transportLogSuppressed) {
+    session.transportLogSuppressed = true;
+    session.transportSummaryChunks = 0;
+    session.transportSummaryBytes = 0;
+    session.transportSummaryPassthroughBytes = 0;
+    session.transportSummaryLastLoggedAt = Date.now();
+    debugLog("tmux.transport", "chunk logging suppressed", {
+      sessionId: session.id,
+      terminalId,
+      limit: TMUX_TRANSPORT_LOG_LIMIT,
+      summaryIntervalMs: TMUX_TRANSPORT_SUMMARY_INTERVAL_MS,
+    });
+    return;
+  }
+
+  maybeLogTmuxTransportSummary(session, terminalId);
+}
+
+function recordTmuxTransportComplete(
+  session: TmuxControlSession,
+  terminalId: string,
+  passthroughBytes: number,
+  remainingCarryLength: number
+) {
+  ensureTransportLogState(session);
+  session.transportSummaryPassthroughBytes += passthroughBytes;
+  maybeLogTmuxTransportSummary(session, terminalId, remainingCarryLength);
 }
 
 function isGenericDispatcherTitle(title: string): boolean {
@@ -255,6 +426,32 @@ function getTransportControlStartCarry(input: string): string {
 
 function getTerminalSession(terminalId: string): TerminalSession | undefined {
   return useTerminalStore.getState().sessions[terminalId];
+}
+
+function pushPendingPaneOutput(session: TmuxControlSession, paneId: string, value: string) {
+  const buffer = session.pendingPaneOutput.get(paneId) ?? [];
+  buffer.push(value);
+
+  let totalChars = buffer.reduce((total, chunk) => total + chunk.length, 0);
+  let droppedChunks = 0;
+  while (
+    buffer.length > TMUX_PENDING_PANE_OUTPUT_MAX_CHUNKS
+    || totalChars > TMUX_PENDING_PANE_OUTPUT_MAX_CHARS
+  ) {
+    const removed = buffer.shift();
+    if (removed === undefined) {
+      break;
+    }
+    totalChars -= removed.length;
+    droppedChunks += 1;
+  }
+
+  session.pendingPaneOutput.set(paneId, buffer);
+  return {
+    chunks: buffer.length,
+    totalChars,
+    droppedChunks,
+  };
 }
 
 function recoverControlSessionFromStore(sessionId: string): TmuxControlSession | null {
@@ -319,10 +516,20 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     pendingNewWindowAnchors: [],
     pendingNewWindowActivations: new Map(),
     windowSizes: new Map(),
+    clientSize: null,
+    clientResizeLayoutSuppressionWindowId: null,
+    clientResizeLayoutSuppressionUntil: 0,
+    clientResizeLayoutSuppressedCount: 0,
     pendingWindowRedraws: new Set(),
     userPaneResizeLocks: new Map(),
     outputLogCount: 0,
     outputLogSuppressed: false,
+    transportLogCount: 0,
+    transportLogSuppressed: false,
+    transportSummaryChunks: 0,
+    transportSummaryBytes: 0,
+    transportSummaryPassthroughBytes: 0,
+    transportSummaryLastLoggedAt: 0,
     needsBootstrapRefresh: false,
     pendingPaneOutput: new Map(),
     pendingInitialPaneCaptures: [],
@@ -2114,13 +2321,13 @@ function handleNotification(session: TmuxControlSession, line: string) {
     }
     const pane = session.panes.get(parsed.paneId);
     if (!pane) {
-      const buffer = session.pendingPaneOutput.get(parsed.paneId) ?? [];
-      buffer.push(parsed.value);
-      session.pendingPaneOutput.set(parsed.paneId, buffer);
+      const pending = pushPendingPaneOutput(session, parsed.paneId, parsed.value);
       debugLog("tmux.notify", "buffer output for pending pane", {
         sessionId: session.id,
         paneId: parsed.paneId,
-        bufferedChunks: buffer.length,
+        bufferedChunks: pending.chunks,
+        bufferedChars: pending.totalChars,
+        droppedChunks: pending.droppedChunks,
         preview: previewDebugText(parsed.value, 120),
       });
       return;
@@ -2196,6 +2403,9 @@ function handleNotification(session: TmuxControlSession, line: string) {
     const parts = line.split(" ");
     const windowId = parts[1];
     if (windowId) {
+      if (shouldSuppressTmuxLayoutChange(session, windowId)) {
+        return;
+      }
       scheduleRefresh(session, windowId);
     }
     return;
@@ -2382,10 +2592,20 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     pendingNewWindowAnchors: [],
     pendingNewWindowActivations: new Map(),
     windowSizes: new Map(),
+    clientSize: null,
+    clientResizeLayoutSuppressionWindowId: null,
+    clientResizeLayoutSuppressionUntil: 0,
+    clientResizeLayoutSuppressedCount: 0,
     pendingWindowRedraws: new Set(),
     userPaneResizeLocks: new Map(),
     outputLogCount: 0,
     outputLogSuppressed: false,
+    transportLogCount: 0,
+    transportLogSuppressed: false,
+    transportSummaryChunks: 0,
+    transportSummaryBytes: 0,
+    transportSummaryPassthroughBytes: 0,
+    transportSummaryLastLoggedAt: 0,
     needsBootstrapRefresh: true,
     pendingPaneOutput: new Map(),
     pendingInitialPaneCaptures: [],
@@ -2429,13 +2649,17 @@ export function routeTmuxTransportOutput(terminalId: string, data: string): stri
   );
 
   if (shouldLogTransportChunk) {
-    debugLog("tmux.transport", "chunk", {
-      terminalId,
-      existingSessionId: existingSessionId ?? null,
-      carryLength: priorCarry.length,
-      bytes: data.length,
-      preview: previewDebugText(data, 200),
-    });
+    if (existingSession) {
+      debugTmuxTransportChunk(existingSession, terminalId, data, priorCarry.length, existingSessionId);
+    } else {
+      debugLog("tmux.transport", "chunk", {
+        terminalId,
+        existingSessionId: existingSessionId ?? null,
+        carryLength: priorCarry.length,
+        bytes: data.length,
+        preview: previewDebugText(data, 200),
+      });
+    }
   }
 
   while (remaining.length > 0) {
@@ -2524,12 +2748,24 @@ export function routeTmuxTransportOutput(terminalId: string, data: string): stri
   }
 
   if (shouldLogTransportChunk) {
-    debugLog("tmux.transport", "chunk complete", {
-      terminalId,
-      passthroughBytes: passthrough.length,
-      remainingCarryLength: (transportRawCarry.get(terminalId) ?? "").length,
-      activeSessionId: session?.id ?? transportTerminalToSessionId.get(terminalId) ?? null,
-    });
+    const activeSession = session
+      ?? getControlSessionById(transportTerminalToSessionId.get(terminalId) ?? terminalId)
+      ?? existingSession;
+    if (activeSession) {
+      recordTmuxTransportComplete(
+        activeSession,
+        terminalId,
+        passthrough.length,
+        (transportRawCarry.get(terminalId) ?? "").length
+      );
+    } else {
+      debugLog("tmux.transport", "chunk complete", {
+        terminalId,
+        passthroughBytes: passthrough.length,
+        remainingCarryLength: (transportRawCarry.get(terminalId) ?? "").length,
+        activeSessionId: null,
+      });
+    }
   }
 
   return passthrough;
@@ -2778,11 +3014,25 @@ function applyTmuxWindowSize(
   }
 
   const nextSize = `${nextCols}x${nextRows}`;
+  ensureTmuxClientSizeState(session);
   if (session.windowSizes.get(windowState.windowId) === nextSize) {
     return false;
   }
 
-  session.windowSizes.set(windowState.windowId, nextSize);
+  if (session.clientSize === nextSize) {
+    session.windowSizes.set(windowState.windowId, nextSize);
+    debugLog("tmux.size", "skip client resize for already-applied size", {
+      sessionId: session.id,
+      windowId: windowState.windowId,
+      ...details,
+      size: nextSize,
+    });
+    return false;
+  }
+
+  const previousClientSize = session.clientSize;
+  markTmuxClientSize(session, nextSize);
+  beginTmuxClientResizeLayoutSuppression(session, windowState.windowId);
   session.pendingWindowRedraws.add(windowState.windowId);
   debugLog("tmux.size", "sync window size", {
     sessionId: session.id,
@@ -2795,8 +3045,17 @@ function applyTmuxWindowSize(
       scheduleRefresh(session, windowState.windowId);
     })
     .catch((error) => {
-      if (session.windowSizes.get(windowState.windowId) === nextSize) {
-        session.windowSizes.delete(windowState.windowId);
+      if (session.clientSize === nextSize) {
+        session.clientSize = previousClientSize;
+        for (const knownWindow of session.windows.values()) {
+          if (session.windowSizes.get(knownWindow.windowId) === nextSize) {
+            if (previousClientSize) {
+              session.windowSizes.set(knownWindow.windowId, previousClientSize);
+            } else {
+              session.windowSizes.delete(knownWindow.windowId);
+            }
+          }
+        }
       }
       session.pendingWindowRedraws.delete(windowState.windowId);
       debugLogError("tmux.size", "refresh-client failed", error);

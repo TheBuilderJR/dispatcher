@@ -3,7 +3,7 @@ export const TMUX_CONTROL_END = "\u001b\\";
 const TMUX_WINDOW_SNAPSHOT_FORMAT = '"#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}"';
 const TMUX_PANE_SNAPSHOT_FORMAT =
   '"#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}\\t#{history_size}"';
-const TMUX_CAPTURE_HISTORY_FALLBACK_LINES = 1_000_000;
+const TMUX_CAPTURE_HISTORY_FALLBACK_LINES = 50_000;
 
 export interface TmuxWindowSnapshot {
   windowId: string;

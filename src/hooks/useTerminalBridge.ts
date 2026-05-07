@@ -43,7 +43,7 @@ interface TerminalInstance {
 }
 
 export interface CapturedTerminalVisualSnapshot extends TerminalVisualTextSnapshot {
-  imageDataUrl: string;
+  imageDataUrl?: string;
 }
 
 interface SyntheticInputSuppression {
@@ -114,7 +114,7 @@ const syntheticInputSuppressions = terminalBridgeRuntime.syntheticInputSuppressi
 const focusSequenceSuppressions = terminalBridgeRuntime.focusSequenceSuppressions;
 const SYNTHETIC_INPUT_SUPPRESSION_MS = 50;
 const FOCUS_SEQUENCE_SUPPRESSION_MS = 150;
-const DEFAULT_SCROLLBACK = 1_000_000;
+const DEFAULT_SCROLLBACK = 50_000;
 const PARKED_TERMINAL_WIDTH = 1200;
 const PARKED_TERMINAL_HEIGHT = 720;
 const PARKING_ROOT_ID = "dispatcher-terminal-parking-root";
@@ -894,21 +894,22 @@ export function captureTerminalScreenshot(terminalId: string): string | null {
   );
 }
 
-export function captureTerminalVisualSnapshot(terminalId: string): CapturedTerminalVisualSnapshot | null {
+export function captureTerminalVisualSnapshot(
+  terminalId: string,
+  options?: { includeScreenshot?: boolean }
+): CapturedTerminalVisualSnapshot | null {
   const instance = instances.get(terminalId);
   if (!instance) {
     return null;
   }
 
-  const imageDataUrl = captureTerminalScreenshot(terminalId);
-  if (imageDataUrl === null) {
-    return null;
+  const snapshot = readTerminalVisualTextSnapshot(terminalId, instance);
+  if (!options?.includeScreenshot) {
+    return snapshot;
   }
 
-  return {
-    ...readTerminalVisualTextSnapshot(terminalId, instance),
-    imageDataUrl,
-  };
+  const imageDataUrl = captureTerminalScreenshot(terminalId);
+  return imageDataUrl === null ? null : { ...snapshot, imageDataUrl };
 }
 
 export function sendSyntheticTerminalInput(terminalId: string, data: string) {

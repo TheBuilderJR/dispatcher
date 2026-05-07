@@ -1,5 +1,9 @@
 import { useEffect } from "react";
-import { captureTerminalVisualSnapshot, ensureTerminalScreenshotTarget } from "./useTerminalBridge";
+import {
+  captureTerminalScreenshot,
+  captureTerminalVisualSnapshot,
+  ensureTerminalScreenshotTarget,
+} from "./useTerminalBridge";
 import { findLayoutKeyForTerminal } from "../lib/layoutUtils";
 import { pushScreenshotDebug } from "../lib/screenshotDebug";
 import { writeDebugArtifact } from "../lib/tauriCommands";
@@ -30,7 +34,7 @@ const MAX_SCREENSHOT_ARTIFACT_LINE_CHARS = 240;
 
 type ScreenshotSample = {
   terminalId: string;
-  screenshot: string;
+  screenshot?: string;
   snapshot: TerminalVisualTextSnapshot;
 };
 
@@ -80,7 +84,7 @@ function escapeHtml(value: string): string {
 
 function buildScreenshotArtifactHtml(args: {
   title: string;
-  imageDataUrl: string;
+  imageDataUrl?: string;
   details: unknown;
 }): string {
   return [
@@ -97,7 +101,9 @@ function buildScreenshotArtifactHtml(args: {
     "</head>",
     "<body>",
     `  <h1>${escapeHtml(args.title)}</h1>`,
-    `  <img src=\"${args.imageDataUrl}\" alt=\"${escapeHtml(args.title)}\">`,
+    args.imageDataUrl
+      ? `  <img src=\"${args.imageDataUrl}\" alt=\"${escapeHtml(args.title)}\">`
+      : "",
     `  <pre>${escapeHtml(JSON.stringify(args.details, null, 2))}</pre>`,
     "</body>",
     "</html>",
@@ -231,6 +237,9 @@ async function writeScreenshotDebugArtifacts(args: {
   for (const [index, sample] of args.screenshots
     .slice(0, MAX_SCREENSHOT_ARTIFACT_COMPONENTS)
     .entries()) {
+    if (!sample.screenshot) {
+      continue;
+    }
     const title = `${args.tabRootTerminalId} component ${index} ${sample.terminalId}`;
     paths.push(await writeDebugArtifact(
       `${prefix}_${index}_${sanitizeArtifactNamePart(sample.terminalId)}.html`,
@@ -371,7 +380,6 @@ export function useTerminalScreenshotMonitor() {
 
             screenshots.push({
               terminalId,
-              screenshot: visualSnapshot.imageDataUrl,
               snapshot: {
                 terminalId: visualSnapshot.terminalId,
                 cols: visualSnapshot.cols,
@@ -515,13 +523,19 @@ export function useTerminalScreenshotMonitor() {
             && now - lastArtifactTime >= SCREENSHOT_ARTIFACT_INTERVAL_MS;
           if (shouldWriteScreenshotArtifact) {
             lastArtifactAt.set(tabRootTerminalId, now);
+            const artifactScreenshots = screenshots.map((sample, index) => ({
+              ...sample,
+              screenshot: index < MAX_SCREENSHOT_ARTIFACT_COMPONENTS
+                ? captureTerminalScreenshot(sample.terminalId) ?? undefined
+                : undefined,
+            }));
             void writeScreenshotDebugArtifacts({
               now,
               tabRootTerminalId,
               activeTabRootTerminalId,
               terminalIds,
               statusTerminalIds,
-              screenshots,
+              screenshots: artifactScreenshots,
               componentHashes,
               hash,
               previousHash,
@@ -593,10 +607,8 @@ export function useTerminalScreenshotMonitor() {
             isNeedsAttention: nextNeedsAttention,
             isPossiblyDone: nextPossiblyDone,
             isLongInactive: nextLongInactive,
-            imageDataUrl: screenshots[0].screenshot,
             componentTerminalIds: terminalIds,
             componentHashes,
-            componentImageDataUrls: screenshots.map(({ screenshot }) => screenshot),
           });
         }
       } finally {

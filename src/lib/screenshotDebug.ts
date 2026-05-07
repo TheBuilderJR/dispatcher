@@ -21,11 +21,11 @@ export interface ScreenshotDebugEntry {
   isNeedsAttention: boolean;
   isPossiblyDone: boolean;
   isLongInactive: boolean;
-  imageDataUrl: string;
+  imageDataUrl?: string;
 }
 
 const SCREENSHOT_DEBUG_EVENT = "dispatcher:screenshot-debug";
-const MAX_SCREENSHOT_DEBUG_ENTRIES = 48;
+const MAX_SCREENSHOT_DEBUG_ENTRIES = 24;
 const SCREENSHOT_DEBUG_TTL_MS = 60 * 60 * 1000;
 
 let nextId = 1;

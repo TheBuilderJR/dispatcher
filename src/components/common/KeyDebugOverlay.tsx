@@ -78,13 +78,15 @@ function getScreenshotImageItems(
     }));
   }
 
-  return [
-    {
-      terminalId: entry.terminalId,
-      label: sessions[entry.terminalId]?.title ?? entry.terminalId,
-      imageDataUrl: entry.imageDataUrl,
-    },
-  ];
+  return entry.imageDataUrl
+    ? [
+        {
+          terminalId: entry.terminalId,
+          label: sessions[entry.terminalId]?.title ?? entry.terminalId,
+          imageDataUrl: entry.imageDataUrl,
+        },
+      ]
+    : [];
 }
 
 export function KeyDebugOverlay() {
@@ -244,41 +246,46 @@ export function KeyDebugOverlay() {
         ) : visibleScreenshotEntries.length === 0 ? (
           <div className="key-debug-empty">No screenshots yet for the active tab</div>
         ) : (
-          visibleScreenshotEntries.map((entry) => (
-            <div key={entry.id} className="key-debug-entry key-debug-entry-screenshot">
-              <span className="key-debug-time">{`${entry.timestamp}.${String(entry.timestampMs % 1000).padStart(3, "0")}`}</span>
-              <span className="key-debug-source">{sessions[entry.terminalId]?.title ?? entry.terminalId}</span>
-              <span className="key-debug-detail">
-                {[
-                  `terminal=${entry.terminalId}`,
-                  `hash=${entry.hash}`,
-                  `prev=${entry.previousHash ?? "none"}`,
-                  formatScreenshotComponents(entry)
-                    ? `components=${formatScreenshotComponents(entry)}`
-                    : null,
-                  formatScreenshotChangeMetrics(entry),
-                  `detected=${String(entry.hasDetectedActivity)}`,
-                  `attention=${String(entry.isNeedsAttention)}`,
-                  `done=${String(entry.isPossiblyDone)}`,
-                  `longInactive=${String(entry.isLongInactive)}`,
-                ].filter((line): line is string => line !== null).join("\n")}
-              </span>
-              <div className="key-debug-screenshot-gallery">
-                {getScreenshotImageItems(entry, sessions).map((item) => (
-                  <figure key={`${entry.id}-${item.terminalId}`} className="key-debug-screenshot-card">
-                    <figcaption className="key-debug-screenshot-caption">
-                      {item.label}
-                    </figcaption>
-                    <img
-                      className="key-debug-screenshot-image"
-                      src={item.imageDataUrl}
-                      alt={`Terminal screenshot for ${item.label}`}
-                    />
-                  </figure>
-                ))}
+          visibleScreenshotEntries.map((entry) => {
+            const screenshotImageItems = getScreenshotImageItems(entry, sessions);
+            return (
+              <div key={entry.id} className="key-debug-entry key-debug-entry-screenshot">
+                <span className="key-debug-time">{`${entry.timestamp}.${String(entry.timestampMs % 1000).padStart(3, "0")}`}</span>
+                <span className="key-debug-source">{sessions[entry.terminalId]?.title ?? entry.terminalId}</span>
+                <span className="key-debug-detail">
+                  {[
+                    `terminal=${entry.terminalId}`,
+                    `hash=${entry.hash}`,
+                    `prev=${entry.previousHash ?? "none"}`,
+                    formatScreenshotComponents(entry)
+                      ? `components=${formatScreenshotComponents(entry)}`
+                      : null,
+                    formatScreenshotChangeMetrics(entry),
+                    `detected=${String(entry.hasDetectedActivity)}`,
+                    `attention=${String(entry.isNeedsAttention)}`,
+                    `done=${String(entry.isPossiblyDone)}`,
+                    `longInactive=${String(entry.isLongInactive)}`,
+                  ].filter((line): line is string => line !== null).join("\n")}
+                </span>
+                {screenshotImageItems.length > 0 ? (
+                  <div className="key-debug-screenshot-gallery">
+                    {screenshotImageItems.map((item) => (
+                      <figure key={`${entry.id}-${item.terminalId}`} className="key-debug-screenshot-card">
+                        <figcaption className="key-debug-screenshot-caption">
+                          {item.label}
+                        </figcaption>
+                        <img
+                          className="key-debug-screenshot-image"
+                          src={item.imageDataUrl}
+                          alt={`Terminal screenshot for ${item.label}`}
+                        />
+                      </figure>
+                    ))}
+                  </div>
+                ) : null}
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>

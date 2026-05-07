@@ -619,6 +619,56 @@ describe("tmuxControl", () => {
     );
   });
 
+  it("does not resend the same tmux client size for sibling windows", async () => {
+    const transportTerminalId = "transport-client-size-once";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateTwoWindows(transportTerminalId);
+    writeTerminalMock.mockClear();
+
+    const firstWindowTerminalId = getWindowTerminalIdByWindowId("@1");
+    const secondWindowTerminalId = getWindowTerminalIdByWindowId("@2");
+    expect(syncTmuxWindowSize(firstWindowTerminalId, 640, 384)).toBe(true);
+    expect(syncTmuxWindowSize(secondWindowTerminalId, 640, 384)).toBe(false);
+
+    const writeCalls = writeTerminalMock.mock.calls as unknown as Array<[string, string]>;
+    const refreshClientWrites = writeCalls.filter(
+      ([, data]) => data === "refresh-client -C 80x24\n"
+    );
+    expect(refreshClientWrites).toHaveLength(1);
+  });
+
+  it("does not refresh every tmux window after a client resize layout burst", async () => {
+    const transportTerminalId = "transport-client-resize-layout-burst";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateTwoWindows(transportTerminalId);
+    writeTerminalMock.mockClear();
+
+    const firstWindowTerminalId = getWindowTerminalIdByWindowId("@1");
+    expect(syncTmuxWindowSize(firstWindowTerminalId, 640, 384)).toBe(true);
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 30 0",
+        "%end 30 0",
+        "%layout-change @1 1111,80x24,0,0,1 1111,80x24,0,0,1 *",
+        "%layout-change @2 2222,80x24,0,0,2 2222,80x24,0,0,2 -",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.runOnlyPendingTimersAsync();
+
+    const writes = (writeTerminalMock.mock.calls as unknown as Array<[string, string]>)
+      .map(([, data]) => data);
+    expect(writes.some((data) => data.includes("display-message -p -t @1"))).toBe(true);
+    expect(writes.some((data) => data.includes("list-panes -t @1"))).toBe(true);
+    expect(writes.some((data) => data.includes("display-message -p -t @2"))).toBe(false);
+    expect(writes.some((data) => data.includes("list-panes -t @2"))).toBe(false);
+  });
+
   it("does not let split pane resize observers fight the tmux window size", async () => {
     const transportTerminalId = "transport-split-pane-resize-skip";
     seedTransportTerminal(transportTerminalId);
