@@ -33,6 +33,7 @@ import { TMUX_CONTROL_END, TMUX_CONTROL_START } from "../tmuxControlProtocol";
 import {
   beginTmuxPaneResizeByTerminal,
   createTmuxWindowForTerminal,
+  handleTmuxTerminalFocus,
   resizeTmuxPaneByTerminal,
   routeTmuxTransportOutput,
   sendInputToTmuxTerminal,
@@ -412,6 +413,40 @@ describe("tmuxControl", () => {
       tmuxControlSessionId: undefined,
     });
     expect(terminalState.activeTerminalId).toBe(transportTerminalId);
+  });
+
+  it("routes ordinary tmux pane output as activity", async () => {
+    const transportTerminalId = "transport-pane-output";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    queueTerminalOutputMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 real output\n");
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      "real output"
+    );
+  });
+
+  it("does not record tmux focus sync output as pane activity", async () => {
+    const transportTerminalId = "transport-focus-output";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    queueTerminalOutputMock.mockClear();
+
+    handleTmuxTerminalFocus(paneTerminalId);
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 focus redraw\n");
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      "focus redraw",
+      { recordActivity: false }
+    );
   });
 
   it("hydrates tmux control output when the DCS start marker is missing", async () => {

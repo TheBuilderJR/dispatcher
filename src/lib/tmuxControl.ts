@@ -141,6 +141,7 @@ interface TmuxControlSession {
   pendingInitialPaneCaptures: string[];
   initialPaneCaptureTimer: number | null;
   initialPaneCaptureActive: boolean;
+  paneOutputActivitySuppressionUntil: Map<string, number>;
 }
 
 interface TmuxRuntimeState {
@@ -204,6 +205,7 @@ const TMUX_INITIAL_CAPTURE_RETRY_DELAY_MS = 50;
 const TMUX_PENDING_PANE_OUTPUT_MAX_CHUNKS = 512;
 const TMUX_PENDING_PANE_OUTPUT_MAX_CHARS = 2_000_000;
 const TMUX_CLIENT_RESIZE_LAYOUT_SUPPRESSION_MS = 1_000;
+const TMUX_PANE_OUTPUT_ACTIVITY_SUPPRESSION_MS = 2_000;
 const TMUX_PASTE_BUFFER_CHUNK_SIZE = 8_000;
 const BRACKETED_PASTE_START = "\u001b[200~";
 const BRACKETED_PASTE_END = "\u001b[201~";
@@ -232,6 +234,10 @@ function ensureInitialPaneCaptureState(session: TmuxControlSession) {
   session.initialPaneCaptureActive ??= false;
 }
 
+function ensurePaneOutputActivitySuppressionState(session: TmuxControlSession) {
+  session.paneOutputActivitySuppressionUntil ??= new Map();
+}
+
 function ensureTransportLogState(session: TmuxControlSession) {
   session.transportLogCount ??= 0;
   session.transportLogSuppressed ??= false;
@@ -246,6 +252,55 @@ function ensureTmuxClientSizeState(session: TmuxControlSession) {
   session.clientResizeLayoutSuppressionWindowId ??= null;
   session.clientResizeLayoutSuppressionUntil ??= 0;
   session.clientResizeLayoutSuppressedCount ??= 0;
+}
+
+function suppressPaneOutputActivity(
+  session: TmuxControlSession,
+  paneId: string,
+  reason: string
+) {
+  ensurePaneOutputActivitySuppressionState(session);
+  const now = Date.now();
+  const expiresAt = now + TMUX_PANE_OUTPUT_ACTIVITY_SUPPRESSION_MS;
+  const previousExpiresAt = session.paneOutputActivitySuppressionUntil.get(paneId) ?? 0;
+  session.paneOutputActivitySuppressionUntil.set(
+    paneId,
+    Math.max(previousExpiresAt, expiresAt)
+  );
+  debugLog("tmux.activity", "suppress pane output activity", {
+    sessionId: session.id,
+    paneId,
+    reason,
+    expiresAt,
+  });
+}
+
+function suppressWindowOutputActivity(
+  session: TmuxControlSession,
+  windowId: string,
+  reason: string
+) {
+  for (const pane of session.panes.values()) {
+    if (pane.windowId === windowId) {
+      suppressPaneOutputActivity(session, pane.paneId, reason);
+    }
+  }
+}
+
+function shouldRecordPaneOutputActivity(session: TmuxControlSession, paneId: string): boolean {
+  ensurePaneOutputActivitySuppressionState(session);
+  const expiresAt = session.paneOutputActivitySuppressionUntil.get(paneId) ?? 0;
+  if (expiresAt <= 0) {
+    return true;
+  }
+
+  const now = Date.now();
+  if (now <= expiresAt) {
+    return false;
+  }
+
+  session.paneOutputActivitySuppressionUntil.delete(paneId);
+  return true;
 }
 
 function markTmuxClientSize(session: TmuxControlSession, nextSize: string) {
@@ -540,6 +595,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     pendingInitialPaneCaptures: [],
     initialPaneCaptureTimer: null,
     initialPaneCaptureActive: false,
+    paneOutputActivitySuppressionUntil: new Map(),
   };
 
   for (const [nodeId, node] of Object.entries(projectState.nodes)) {
@@ -668,6 +724,7 @@ function getControlSessionById(sessionId: string | undefined): TmuxControlSessio
   const session = controlSessions.get(sessionId) ?? recoverControlSessionFromStore(sessionId);
   if (session) {
     ensureInitialPaneCaptureState(session);
+    ensurePaneOutputActivitySuppressionState(session);
   }
   return session;
 }
@@ -2338,12 +2395,14 @@ function handleNotification(session: TmuxControlSession, line: string) {
       return;
     }
 
+    const recordActivity = shouldRecordPaneOutputActivity(session, parsed.paneId);
     if (session.outputLogCount < TMUX_OUTPUT_LOG_LIMIT) {
       session.outputLogCount += 1;
       debugLog("tmux.notify", "output", {
         sessionId: session.id,
         paneId: parsed.paneId,
         bytes: parsed.value.length,
+        recordActivity,
         preview: previewDebugText(parsed.value, 120),
       });
     } else if (!session.outputLogSuppressed) {
@@ -2354,7 +2413,19 @@ function handleNotification(session: TmuxControlSession, line: string) {
       });
     }
 
-    queueTerminalOutput(pane.terminalId, unescapeTmuxOutput(parsed.value));
+    const output = unescapeTmuxOutput(parsed.value);
+    if (recordActivity) {
+      queueTerminalOutput(pane.terminalId, output);
+    } else {
+      debugLog("tmux.activity", "suppressed output activity", {
+        sessionId: session.id,
+        paneId: parsed.paneId,
+        terminalId: pane.terminalId,
+        bytes: parsed.value.length,
+        preview: previewDebugText(parsed.value, 120),
+      });
+      queueTerminalOutput(pane.terminalId, output, { recordActivity: false });
+    }
     return;
   }
 
@@ -2616,6 +2687,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     pendingInitialPaneCaptures: [],
     initialPaneCaptureTimer: null,
     initialPaneCaptureActive: false,
+    paneOutputActivitySuppressionUntil: new Map(),
   };
 
   controlSessions.set(session.id, session);
@@ -2940,10 +3012,12 @@ export function handleTmuxTerminalFocus(terminalId: string) {
     parentNodeId: placement.parentNodeId,
   });
 
+  suppressWindowOutputActivity(session, window.windowId, "focus-sync");
   void sendCommand(session, `select-window -t ${window.windowId}`).catch((error) => {
     debugLogError("tmux.focus", "select-window failed", error);
   });
   if (pane) {
+    suppressPaneOutputActivity(session, pane.paneId, "focus-pane-sync");
     if (pane.initialContentCaptured) {
       void redrawVisiblePaneContent(session, pane, "focus").catch((error) => {
         debugLogError("tmux.capture", "focus pane redraw failed", error);
