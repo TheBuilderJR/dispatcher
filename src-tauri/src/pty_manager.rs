@@ -67,7 +67,86 @@ fn shell_basename(shell: &str) -> &str {
     shell.rsplit('/').next().unwrap_or(shell)
 }
 
+fn remove_agent_environment(cmd: &mut CommandBuilder) {
+    let mut removed: Vec<String> = Vec::new();
+    let prefixes = [
+        "CLAUDE_",
+        "CODEX_",
+        "CODING_AGENT_",
+        "META_3PAI_",
+        "META_CLAUDE_",
+        "META_CODEX_",
+        "OTEL_",
+    ];
+    let exact_names = [
+        "AGENT",
+        "BUCK2_CLIENT_METADATA",
+        "CPE_RUST_X2P_SUPPORTS_VPNLESS",
+        "DOTSLASH_X2P_EDGETERM",
+        "ENABLE_AGENTS_CLI_TRACING_THRIFT",
+        "ENABLE_ENHANCED_TELEMETRY_BETA",
+        "JF_VPNLESS",
+        "LINTTOOL_CALLER",
+        "OPENAI_API_KEY",
+        "X2P_AGENT_PROXY_ADDRESS",
+        "X2P_INJECT_CAT",
+        "X2P_SUPPORTS_VPNLESS",
+    ];
+
+    for name in exact_names {
+        if cmd.get_env(name).is_some() {
+            cmd.env_remove(name);
+            removed.push(name.to_string());
+        }
+    }
+
+    let prefixed_names: Vec<String> = cmd
+        .iter_full_env_as_str()
+        .filter_map(|(name, _)| {
+            if prefixes.iter().any(|prefix| name.starts_with(prefix)) {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    for name in prefixed_names {
+        cmd.env_remove(&name);
+        removed.push(name);
+    }
+
+    for name in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
+        let should_remove = cmd
+            .get_env(name)
+            .and_then(|value| value.to_str())
+            .map(|value| {
+                value.contains("localhost:10054")
+                    || value.contains("127.0.0.1:10054")
+                    || value.contains("[::1]:10054")
+            })
+            .unwrap_or(false);
+        if should_remove {
+            cmd.env_remove(name);
+            removed.push(name.to_string());
+        }
+    }
+
+    if !removed.is_empty() {
+        #[cfg(not(test))]
+        {
+            removed.sort();
+            removed.dedup();
+            let _ = crate::debug_log::append_debug_log(&format!(
+                "[backend:pty_env] removed inherited agent variables names={}",
+                removed.join(",")
+            ));
+        }
+    }
+}
+
 fn apply_shell_env(cmd: &mut CommandBuilder) {
+    remove_agent_environment(cmd);
+
     // Start each PTY as a clean terminal session instead of inheriting
     // emulator-specific parent metadata from Terminal.app/iTerm/tmux.
     cmd.env("TERM", "xterm-256color");
@@ -102,6 +181,40 @@ fn apply_shell_env(cmd: &mut CommandBuilder) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_inherited_agent_environment_from_pty_commands() {
+        let mut cmd = CommandBuilder::new("zsh");
+        cmd.env_clear();
+        cmd.env("USER", "bobren");
+        cmd.env("CODEX_THREAD_ID", "thread");
+        cmd.env("CLAUDE_CODE_TMPDIR", "/tmp/claude");
+        cmd.env("X2P_AGENT_PROXY_ADDRESS", "localhost:10054");
+        cmd.env("DOTSLASH_X2P_EDGETERM", "always");
+        cmd.env("HTTP_PROXY", "http://localhost:10054");
+        cmd.env("HTTPS_PROXY", "http://corp-proxy.example.com:8080");
+
+        remove_agent_environment(&mut cmd);
+
+        assert_eq!(
+            cmd.get_env("USER").and_then(|value| value.to_str()),
+            Some("bobren"),
+        );
+        assert!(cmd.get_env("CODEX_THREAD_ID").is_none());
+        assert!(cmd.get_env("CLAUDE_CODE_TMPDIR").is_none());
+        assert!(cmd.get_env("X2P_AGENT_PROXY_ADDRESS").is_none());
+        assert!(cmd.get_env("DOTSLASH_X2P_EDGETERM").is_none());
+        assert!(cmd.get_env("HTTP_PROXY").is_none());
+        assert_eq!(
+            cmd.get_env("HTTPS_PROXY").and_then(|value| value.to_str()),
+            Some("http://corp-proxy.example.com:8080"),
+        );
     }
 }
 
