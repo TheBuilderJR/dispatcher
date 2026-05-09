@@ -503,7 +503,7 @@ describe("tmuxControl", () => {
     });
   });
 
-  it("restores tmux history with autowrap disabled and redraws the visible screen", async () => {
+  it("restores tmux history with autowrap disabled without a second screen redraw", async () => {
     const transportTerminalId = "transport-history-redraw";
     seedTransportTerminal(transportTerminalId);
 
@@ -545,29 +545,20 @@ describe("tmuxControl", () => {
     );
     await Promise.resolve();
     await Promise.resolve();
-    expect(writeTerminalMock).toHaveBeenLastCalledWith(
-      transportTerminalId,
-      "capture-pane -p -e -C -t %1\n"
-    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
 
-    routeTmuxTransportOutput(
-      transportTerminalId,
-      [
-        "%begin 4 0",
-        "visible screen row",
-        "%end 4 0",
-        "",
-      ].join("\n")
-    );
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    const writeCalls = writeTerminalMock.mock.calls as unknown as Array<[string, string]>;
+    expect(writeCalls.filter(([, data]) => data.startsWith("capture-pane"))).toEqual([
+      [transportTerminalId, "capture-pane -p -e -C -S -3 -t %1\n"],
+    ]);
 
     const paneTerminalId = getPaneTerminalIdByPaneId("%1");
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       paneTerminalId,
-      "\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jhistory row\r\nfull screen row\u001b[H\u001b[2Jvisible screen row\u001b[?7h\u001b[0m\u001b[4;3H",
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jhistory row\r\nfull screen row\u001b[?7h\u001b[0m\u001b[4;3H",
       { recordActivity: false }
     );
   });

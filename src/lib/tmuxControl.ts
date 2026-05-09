@@ -1847,15 +1847,6 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
         historySize: pane.historySize,
       })
     );
-    const screenLines = !pane.alternateOn && pane.historySize > 0
-      ? await sendCommand(
-        session,
-        buildTmuxPaneCaptureCommand({
-          paneId: pane.paneId,
-          includeHistory: false,
-        })
-      )
-      : lines;
     const currentPane = session.panes.get(pane.paneId);
     const terminal = getTerminalSession(pane.terminalId);
     if (currentPane?.terminalId !== pane.terminalId || !terminal) {
@@ -1871,13 +1862,9 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
     const cursorRow = Math.max(1, Math.floor(pane.cursorY) + 1);
     const cursorCol = Math.max(1, Math.floor(pane.cursorX) + 1);
     const content = unescapeTmuxOutput(lines.join("\r\n"));
-    const screenContent = unescapeTmuxOutput(screenLines.join("\r\n"));
-    const redrawScreen = screenLines !== lines
-      ? `\u001b[H\u001b[2J${screenContent}`
-      : "";
     queueTerminalOutput(
       pane.terminalId,
-      `\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3J${content}${redrawScreen}\u001b[?7h\u001b[0m\u001b[${cursorRow};${cursorCol}H`,
+      `\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3J${content}\u001b[?7h\u001b[0m\u001b[${cursorRow};${cursorCol}H`,
       { recordActivity: false }
     );
     debugLog("tmux.capture", "initial pane content complete", {
@@ -1885,7 +1872,7 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
       paneId: pane.paneId,
       terminalId: pane.terminalId,
       lines: lines.length,
-      screenLines: screenLines.length,
+      includesHistory: !pane.alternateOn && pane.historySize > 0,
     });
   } catch (error) {
     pane.initialContentCaptured = false;
