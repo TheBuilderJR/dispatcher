@@ -1865,7 +1865,7 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
     queueTerminalOutput(
       pane.terminalId,
       `\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3J${content}\u001b[?7h\u001b[0m\u001b[${cursorRow};${cursorCol}H`,
-      { recordActivity: false }
+      { recordActivity: false, allowParkedWrite: true }
     );
     debugLog("tmux.capture", "initial pane content complete", {
       sessionId: session.id,

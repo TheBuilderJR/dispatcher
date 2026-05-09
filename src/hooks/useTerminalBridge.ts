@@ -57,6 +57,7 @@ interface FocusSequenceSuppression {
 
 interface QueuedTerminalOutputOptions {
   recordActivity?: boolean;
+  allowParkedWrite?: boolean;
 }
 
 interface TerminalBridgeRuntimeState {
@@ -65,6 +66,7 @@ interface TerminalBridgeRuntimeState {
   syntheticInputSuppressions: Map<string, SyntheticInputSuppression>;
   focusSequenceSuppressions: Map<string, FocusSequenceSuppression>;
   writeBuffers: Map<string, string[]>;
+  writeBufferAllowParked: Set<string>;
   writeRafs: Map<string, number>;
   writeInFlight: Set<string>;
   writeStatusRecorded: Set<string>;
@@ -86,6 +88,7 @@ function getTerminalBridgeRuntimeState(): TerminalBridgeRuntimeState {
       writeBuffers: globalThis.__dispatcherTerminalBridgeRuntimeState.writeBuffers.size,
     });
     globalThis.__dispatcherTerminalBridgeRuntimeState.writeInFlight ??= new Set<string>();
+    globalThis.__dispatcherTerminalBridgeRuntimeState.writeBufferAllowParked ??= new Set<string>();
     return globalThis.__dispatcherTerminalBridgeRuntimeState;
   }
 
@@ -95,6 +98,7 @@ function getTerminalBridgeRuntimeState(): TerminalBridgeRuntimeState {
     syntheticInputSuppressions: new Map<string, SyntheticInputSuppression>(),
     focusSequenceSuppressions: new Map<string, FocusSequenceSuppression>(),
     writeBuffers: new Map<string, string[]>(),
+    writeBufferAllowParked: new Set<string>(),
     writeRafs: new Map<string, number>(),
     writeInFlight: new Set<string>(),
     writeStatusRecorded: new Set<string>(),
@@ -128,6 +132,7 @@ const PARKING_ROOT_ID = "dispatcher-terminal-parking-root";
 // ---------------------------------------------------------------------------
 
 const writeBuffers = terminalBridgeRuntime.writeBuffers;
+const writeBufferAllowParked = terminalBridgeRuntime.writeBufferAllowParked;
 const writeRafs = terminalBridgeRuntime.writeRafs;
 const writeInFlight = terminalBridgeRuntime.writeInFlight;
 const writeStatusRecorded = terminalBridgeRuntime.writeStatusRecorded;
@@ -252,13 +257,14 @@ function drainTerminalWriteBuffer(terminalId: string) {
 
   const combined = buf.join("");
   buf.length = 0;
+  const allowParkedWrite = writeBufferAllowParked.delete(terminalId);
   const instance = instances.get(terminalId);
   const xterm = instance?.xterm;
   if (!xterm) {
     writeStatusRecorded.delete(terminalId);
     return;
   }
-  if (shouldSkipParkedTmuxWrite(terminalId, instance)) {
+  if (!allowParkedWrite && shouldSkipParkedTmuxWrite(terminalId, instance)) {
     writeStatusRecorded.delete(terminalId);
     return;
   }
@@ -284,6 +290,9 @@ function batchedWrite(
     writeBuffers.set(terminalId, buffer);
   }
   buffer.push(data);
+  if (options?.allowParkedWrite) {
+    writeBufferAllowParked.add(terminalId);
+  }
 
   const shouldRecordOutput =
     options?.recordActivity !== false
@@ -355,6 +364,7 @@ function disposeWriteBatch(terminalId: string) {
     writeRafs.delete(terminalId);
   }
   writeBuffers.delete(terminalId);
+  writeBufferAllowParked.delete(terminalId);
   writeInFlight.delete(terminalId);
   writeStatusRecorded.delete(terminalId);
 }

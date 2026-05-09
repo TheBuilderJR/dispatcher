@@ -211,7 +211,7 @@ describe("useTerminalBridge synthetic input", () => {
     disposeTerminalInstance("tmux-pane-test");
   });
 
-  it("does not render output into parked tmux panes", () => {
+  it("does not render output into parked tmux panes", async () => {
     useTerminalStore.getState().addSession("tmux-pane-test", "A");
     useTerminalStore.getState().patchSession("tmux-pane-test", {
       backendKind: "tmux-pane",
@@ -222,9 +222,35 @@ describe("useTerminalBridge synthetic input", () => {
 
     ensureTerminalScreenshotTarget("tmux-pane-test");
     queueTerminalOutput("tmux-pane-test", "real progress\n");
+    await new Promise((resolve) => requestAnimationFrame(resolve));
 
     expect(createdTerminals[0].write).not.toHaveBeenCalled();
     expect(useTerminalStore.getState().sessions["tmux-pane-test"].lastOutputAt).toBeGreaterThan(0);
+
+    disposeTerminalInstance("tmux-pane-test");
+  });
+
+  it("renders explicit history hydration writes into parked tmux panes", async () => {
+    useTerminalStore.getState().addSession("tmux-pane-test", "A");
+    useTerminalStore.getState().patchSession("tmux-pane-test", {
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: "session-1",
+      tmuxWindowId: "@1",
+      tmuxPaneId: "%1",
+    });
+
+    ensureTerminalScreenshotTarget("tmux-pane-test");
+    queueTerminalOutput("tmux-pane-test", "restored history\n", {
+      recordActivity: false,
+      allowParkedWrite: true,
+    });
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
+    expect(createdTerminals[0].write).toHaveBeenCalledWith(
+      "restored history\n",
+      expect.any(Function)
+    );
+    expect(useTerminalStore.getState().sessions["tmux-pane-test"].lastOutputAt).toBe(0);
 
     disposeTerminalInstance("tmux-pane-test");
   });

@@ -559,7 +559,7 @@ describe("tmuxControl", () => {
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       paneTerminalId,
       "\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jhistory row\r\nfull screen row\u001b[?7h\u001b[0m\u001b[4;3H",
-      { recordActivity: false }
+      { recordActivity: false, allowParkedWrite: true }
     );
   });
 
