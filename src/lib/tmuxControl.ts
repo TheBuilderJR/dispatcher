@@ -147,6 +147,15 @@ interface TmuxControlSession {
   initialPaneCaptureTimer: number | null;
   initialPaneCaptureActive: boolean;
   paneOutputActivitySuppressionUntil: Map<string, number>;
+  suppressedPaneOutputActivitySummaries: Map<string, SuppressedPaneOutputActivitySummary>;
+}
+
+interface SuppressedPaneOutputActivitySummary {
+  chunks: number;
+  bytes: number;
+  firstPreview: string;
+  lastPreview: string;
+  lastLoggedAt: number;
 }
 
 interface TmuxRuntimeState {
@@ -211,6 +220,7 @@ const TMUX_PENDING_PANE_OUTPUT_MAX_CHUNKS = 512;
 const TMUX_PENDING_PANE_OUTPUT_MAX_CHARS = 2_000_000;
 const TMUX_CLIENT_RESIZE_LAYOUT_SUPPRESSION_MS = 1_000;
 const TMUX_PANE_OUTPUT_ACTIVITY_SUPPRESSION_MS = 2_000;
+const TMUX_SUPPRESSED_ACTIVITY_SUMMARY_INTERVAL_MS = 5_000;
 const TMUX_HISTORY_REFRESH_COOLDOWN_MS = 30_000;
 const TMUX_HISTORY_REFRESH_DEFER_LOG_INTERVAL_MS = 10_000;
 const TMUX_PASTE_BUFFER_CHUNK_SIZE = 8_000;
@@ -251,6 +261,7 @@ function ensurePaneHistoryCaptureState(pane: TmuxPaneState) {
 
 function ensurePaneOutputActivitySuppressionState(session: TmuxControlSession) {
   session.paneOutputActivitySuppressionUntil ??= new Map();
+  session.suppressedPaneOutputActivitySummaries ??= new Map();
 }
 
 function ensureTransportLogState(session: TmuxControlSession) {
@@ -316,6 +327,56 @@ function shouldRecordPaneOutputActivity(session: TmuxControlSession, paneId: str
 
   session.paneOutputActivitySuppressionUntil.delete(paneId);
   return true;
+}
+
+function recordSuppressedPaneOutputActivity(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  value: string
+) {
+  ensurePaneOutputActivitySuppressionState(session);
+
+  const now = Date.now();
+  const preview = previewDebugText(value, 120);
+  let summary = session.suppressedPaneOutputActivitySummaries.get(pane.paneId);
+  if (!summary) {
+    summary = {
+      chunks: 0,
+      bytes: 0,
+      firstPreview: preview,
+      lastPreview: preview,
+      lastLoggedAt: now,
+    };
+    session.suppressedPaneOutputActivitySummaries.set(pane.paneId, summary);
+  }
+
+  if (summary.chunks === 0) {
+    summary.firstPreview = preview;
+  }
+  summary.chunks += 1;
+  summary.bytes += value.length;
+  summary.lastPreview = preview;
+
+  if (now - summary.lastLoggedAt < TMUX_SUPPRESSED_ACTIVITY_SUMMARY_INTERVAL_MS) {
+    return;
+  }
+
+  debugLog("tmux.activity", "suppressed output activity summary", {
+    sessionId: session.id,
+    paneId: pane.paneId,
+    terminalId: pane.terminalId,
+    chunks: summary.chunks,
+    bytes: summary.bytes,
+    intervalMs: now - summary.lastLoggedAt,
+    firstPreview: summary.firstPreview,
+    lastPreview: summary.lastPreview,
+  });
+
+  summary.chunks = 0;
+  summary.bytes = 0;
+  summary.firstPreview = "";
+  summary.lastPreview = preview;
+  summary.lastLoggedAt = now;
 }
 
 function markTmuxClientSize(session: TmuxControlSession, nextSize: string) {
@@ -611,6 +672,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     initialPaneCaptureTimer: null,
     initialPaneCaptureActive: false,
     paneOutputActivitySuppressionUntil: new Map(),
+    suppressedPaneOutputActivitySummaries: new Map(),
   };
 
   for (const [nodeId, node] of Object.entries(projectState.nodes)) {
@@ -2683,13 +2745,7 @@ function handleNotification(session: TmuxControlSession, line: string) {
     if (recordActivity) {
       queueTerminalOutput(pane.terminalId, output);
     } else {
-      debugLog("tmux.activity", "suppressed output activity", {
-        sessionId: session.id,
-        paneId: parsed.paneId,
-        terminalId: pane.terminalId,
-        bytes: parsed.value.length,
-        preview: previewDebugText(parsed.value, 120),
-      });
+      recordSuppressedPaneOutputActivity(session, pane, parsed.value);
       queueTerminalOutput(pane.terminalId, output, { recordActivity: false });
     }
     return;
@@ -2954,6 +3010,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     initialPaneCaptureTimer: null,
     initialPaneCaptureActive: false,
     paneOutputActivitySuppressionUntil: new Map(),
+    suppressedPaneOutputActivitySummaries: new Map(),
   };
 
   controlSessions.set(session.id, session);

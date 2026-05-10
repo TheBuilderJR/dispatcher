@@ -1,6 +1,8 @@
 use crate::errors::PtyError;
 use crate::pty_manager::{PtyManager, TerminalDebugInfo, TerminalOutput};
 use std::fs;
+use std::path::Path;
+use std::time::SystemTime;
 #[allow(unused_imports)]
 use tauri::{ipc::Channel, AppHandle, Manager, State};
 
@@ -193,6 +195,57 @@ fn sanitize_debug_artifact_name(file_name: &str) -> String {
     }
 }
 
+const DEBUG_ARTIFACT_MAX_FILES: usize = 400;
+const DEBUG_ARTIFACT_MAX_BYTES: u64 = 300 * 1024 * 1024;
+
+struct DebugArtifactEntry {
+    path: std::path::PathBuf,
+    modified: SystemTime,
+    bytes: u64,
+}
+
+fn prune_debug_artifacts(dir: &Path) -> Result<(), PtyError> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let metadata = entry.metadata()?;
+        if metadata.is_file() {
+            entries.push(DebugArtifactEntry {
+                path: entry.path(),
+                modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                bytes: metadata.len(),
+            });
+        }
+    }
+
+    entries.sort_by(|a, b| b.modified.cmp(&a.modified));
+
+    let mut kept_files = 0usize;
+    let mut kept_bytes = 0u64;
+    let mut removed_files = 0usize;
+    let mut removed_bytes = 0u64;
+    for entry in entries {
+        kept_files += 1;
+        kept_bytes = kept_bytes.saturating_add(entry.bytes);
+        if kept_files <= DEBUG_ARTIFACT_MAX_FILES && kept_bytes <= DEBUG_ARTIFACT_MAX_BYTES {
+            continue;
+        }
+
+        fs::remove_file(&entry.path)?;
+        removed_files += 1;
+        removed_bytes = removed_bytes.saturating_add(entry.bytes);
+    }
+
+    if removed_files > 0 {
+        let _ = crate::debug_log::append_debug_log(&format!(
+            "[backend:debug_artifacts:prune] removed_files={} removed_bytes={} max_files={} max_bytes={}",
+            removed_files, removed_bytes, DEBUG_ARTIFACT_MAX_FILES, DEBUG_ARTIFACT_MAX_BYTES
+        ));
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn write_debug_artifact(file_name: String, content: String) -> Result<String, PtyError> {
     let debug_log_path = crate::debug_log::debug_log_path();
@@ -204,6 +257,7 @@ pub fn write_debug_artifact(file_name: String, content: String) -> Result<String
 
     let path = dir.join(sanitize_debug_artifact_name(&file_name));
     fs::write(&path, content)?;
+    let _ = prune_debug_artifacts(&dir);
 
     Ok(path.display().to_string())
 }

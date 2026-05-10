@@ -35,7 +35,8 @@ const SCREENSHOT_LONG_INACTIVITY_MS = 60 * 60 * 1000;
 // Tmux focus can redraw panes without real agent progress. This short window
 // prevents those focus-only redraws from clearing pulse/brown state.
 const FOCUS_VISUAL_SUPPRESSION_MS = SCREENSHOT_INTERVAL_MS + 2_500;
-const SCREENSHOT_ARTIFACT_INTERVAL_MS = 30_000;
+const SCREENSHOT_ARTIFACT_INTERVAL_MS = 5 * 60 * 1000;
+const SCREENSHOT_ARTIFACT_GLOBAL_INTERVAL_MS = 30_000;
 const MAX_VISUAL_TABS_PER_SAMPLE = 6;
 const MAX_SCREENSHOT_ARTIFACT_COMPONENTS = 4;
 const MAX_SCREENSHOT_IMAGE_CAPTURES_PER_SAMPLE = 1;
@@ -88,6 +89,27 @@ export function shouldIgnoreTmuxFocusVisualChange(args: {
     && args.hasTmuxStatusSession
     && args.lastUserInputAt <= args.suppressionStartedAt
     && args.lastOutputAt <= args.suppressionStartedAt
+  );
+}
+
+export function shouldWriteScreenshotDebugArtifact(args: {
+  isBaselineCapture: boolean;
+  statusTransitioned: boolean;
+  now: number;
+  lastTabArtifactAt: number;
+  lastGlobalArtifactAt: number;
+  perTabIntervalMs?: number;
+  globalIntervalMs?: number;
+}): boolean {
+  if (args.isBaselineCapture || !args.statusTransitioned) {
+    return false;
+  }
+
+  const perTabIntervalMs = args.perTabIntervalMs ?? SCREENSHOT_ARTIFACT_INTERVAL_MS;
+  const globalIntervalMs = args.globalIntervalMs ?? SCREENSHOT_ARTIFACT_GLOBAL_INTERVAL_MS;
+  return (
+    args.now - args.lastTabArtifactAt >= perTabIntervalMs
+    && args.now - args.lastGlobalArtifactAt >= globalIntervalMs
   );
 }
 
@@ -403,6 +425,7 @@ export function useTerminalScreenshotMonitor() {
     const focusVisualSuppressions = new Map<string, FocusVisualSuppression>();
     const lastArtifactAt = new Map<string, number>();
     const scheduledSamples = new Set<number>();
+    let lastGlobalArtifactAt = 0;
     let visualSampleCursor = 0;
     let isSampling = false;
     let isDisposed = false;
@@ -912,16 +935,20 @@ export function useTerminalScreenshotMonitor() {
           }
 
           const lastArtifactTime = lastArtifactAt.get(tabRootTerminalId) ?? 0;
-          const shouldWriteScreenshotArtifact =
-            !isBaselineCapture
-            && statusTransitioned
-            && now - lastArtifactTime >= SCREENSHOT_ARTIFACT_INTERVAL_MS;
+          const shouldWriteScreenshotArtifact = shouldWriteScreenshotDebugArtifact({
+            isBaselineCapture,
+            statusTransitioned,
+            now,
+            lastTabArtifactAt: lastArtifactTime,
+            lastGlobalArtifactAt,
+          });
           const shouldAttachScreenshotImages = shouldWriteScreenshotArtifact;
           const screenshotsWithOptionalImages = shouldAttachScreenshotImages
             ? attachScreenshotImages(screenshots, { maxImages: MAX_SCREENSHOT_IMAGE_CAPTURES_PER_SAMPLE })
             : screenshots;
           if (shouldWriteScreenshotArtifact) {
             lastArtifactAt.set(tabRootTerminalId, now);
+            lastGlobalArtifactAt = now;
             void writeScreenshotDebugArtifacts({
               now,
               tabRootTerminalId,

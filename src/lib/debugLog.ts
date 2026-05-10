@@ -3,7 +3,10 @@ import { appendDebugLog } from "./tauriCommands";
 let pendingLines: string[] = [];
 let flushTimer: number | null = null;
 let pendingChars = 0;
-const MAX_PENDING_CHARS = 2048;
+// Debug logging goes through Tauri IPC and a native file append. Keep enough
+// batching that bursty tmux/status logs do not monopolize the renderer thread.
+const MAX_PENDING_CHARS = 64 * 1024;
+const FLUSH_DELAY_MS = 100;
 
 function flushPendingLines() {
   if (pendingLines.length === 0) {
@@ -38,7 +41,7 @@ function scheduleFlush() {
 
   flushTimer = window.setTimeout(() => {
     flushPendingLines();
-  }, 50);
+  }, FLUSH_DELAY_MS);
 }
 
 function summarizeValue(value: unknown): string {

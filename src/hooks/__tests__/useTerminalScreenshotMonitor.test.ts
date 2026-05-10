@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   selectVisualSampleTabRootTerminalIds,
   shouldIgnoreTmuxFocusVisualChange,
+  shouldWriteScreenshotDebugArtifact,
 } from "../useTerminalScreenshotMonitor";
 
 describe("shouldIgnoreTmuxFocusVisualChange", () => {
@@ -61,5 +62,57 @@ describe("selectVisualSampleTabRootTerminalIds", () => {
       cursor: 0,
       canSample: () => false,
     })).toEqual({ selected: [], nextCursor: 0 });
+  });
+});
+
+describe("shouldWriteScreenshotDebugArtifact", () => {
+  it("requires a real status transition after baseline capture", () => {
+    expect(shouldWriteScreenshotDebugArtifact({
+      isBaselineCapture: true,
+      statusTransitioned: true,
+      now: 10_000,
+      lastTabArtifactAt: 0,
+      lastGlobalArtifactAt: 0,
+      perTabIntervalMs: 1_000,
+      globalIntervalMs: 1_000,
+    })).toBe(false);
+
+    expect(shouldWriteScreenshotDebugArtifact({
+      isBaselineCapture: false,
+      statusTransitioned: false,
+      now: 10_000,
+      lastTabArtifactAt: 0,
+      lastGlobalArtifactAt: 0,
+      perTabIntervalMs: 1_000,
+      globalIntervalMs: 1_000,
+    })).toBe(false);
+  });
+
+  it("rate limits screenshot artifacts per tab and globally", () => {
+    const base = {
+      isBaselineCapture: false,
+      statusTransitioned: true,
+      now: 10_000,
+      perTabIntervalMs: 5_000,
+      globalIntervalMs: 2_000,
+    };
+
+    expect(shouldWriteScreenshotDebugArtifact({
+      ...base,
+      lastTabArtifactAt: 4_000,
+      lastGlobalArtifactAt: 0,
+    })).toBe(true);
+
+    expect(shouldWriteScreenshotDebugArtifact({
+      ...base,
+      lastTabArtifactAt: 6_000,
+      lastGlobalArtifactAt: 0,
+    })).toBe(false);
+
+    expect(shouldWriteScreenshotDebugArtifact({
+      ...base,
+      lastTabArtifactAt: 0,
+      lastGlobalArtifactAt: 9_000,
+    })).toBe(false);
   });
 });
