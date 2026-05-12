@@ -13,6 +13,21 @@ export interface TerminalDebugInfo {
   vreprint: number | null;
 }
 
+export interface RendererHeartbeatDetails {
+  sequence: number;
+  reason: string;
+  href: string | null;
+  visibilityState: string | null;
+  activeTerminalId: string | null;
+  activeTerminalBackendKind: string | null;
+  sessionCount: number;
+  localCount: number;
+  tmuxTransportCount: number;
+  tmuxWindowCount: number;
+  tmuxPaneCount: number;
+  skippedHeartbeatCount: number;
+}
+
 export async function createTerminal(
   terminalId: string,
   onOutput: Channel<TerminalOutputPayload>,
@@ -78,6 +93,12 @@ export async function hideFontPanel(): Promise<void> {
 
 export async function appendDebugLog(message: string): Promise<void> {
   await invoke("append_debug_log", { message });
+}
+
+export async function rendererHeartbeat(
+  details: RendererHeartbeatDetails
+): Promise<void> {
+  await invoke("renderer_heartbeat", { details });
 }
 
 export async function getDebugLogPath(): Promise<string> {

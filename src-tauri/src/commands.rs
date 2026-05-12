@@ -1,5 +1,6 @@
 use crate::errors::PtyError;
 use crate::pty_manager::{PtyManager, TerminalDebugInfo, TerminalOutput};
+use crate::renderer_watchdog::{RendererHeartbeatDetails, RendererWatchdog};
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
@@ -46,7 +47,8 @@ pub fn create_terminal(
         terminal_id, cwd, cols, rows
     ));
 
-    let result = state.create_terminal(&app_handle, terminal_id.clone(), cwd, cols, rows, on_output);
+    let result =
+        state.create_terminal(&app_handle, terminal_id.clone(), cwd, cols, rows, on_output);
     if let Err(err) = &result {
         let _ = crate::debug_log::append_debug_log(&format!(
             "[backend:create_terminal:error] terminal_id={} error={}",
@@ -102,10 +104,7 @@ pub fn resize_terminal(
 }
 
 #[tauri::command]
-pub fn close_terminal(
-    state: State<'_, PtyManager>,
-    terminal_id: String,
-) -> Result<(), PtyError> {
+pub fn close_terminal(state: State<'_, PtyManager>, terminal_id: String) -> Result<(), PtyError> {
     let _ = crate::debug_log::append_debug_log(&format!(
         "[backend:close_terminal] terminal_id={}",
         terminal_id
@@ -162,16 +161,21 @@ pub fn warm_pool(
 }
 
 #[tauri::command]
-pub fn refresh_pool(
-    app_handle: AppHandle,
-    state: State<'_, PtyManager>,
-) -> Result<(), PtyError> {
+pub fn refresh_pool(app_handle: AppHandle, state: State<'_, PtyManager>) -> Result<(), PtyError> {
     state.refresh_pool(&app_handle)
 }
 
 #[tauri::command]
 pub fn append_debug_log(message: String) -> Result<(), PtyError> {
     crate::debug_log::append_debug_log(&message)
+}
+
+#[tauri::command]
+pub fn renderer_heartbeat(
+    state: State<'_, RendererWatchdog>,
+    details: RendererHeartbeatDetails,
+) -> Result<(), PtyError> {
+    state.record_heartbeat(details)
 }
 
 #[tauri::command]
