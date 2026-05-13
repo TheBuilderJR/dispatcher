@@ -112,6 +112,7 @@ function handlePointerMove(e: PointerEvent) {
     if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) > THRESHOLD) {
       active = true;
       draggedEl?.classList.add("is-dragging");
+      setTextSelectionSuppressed();
       clearDocumentSelection();
     } else {
       return;
@@ -249,7 +250,6 @@ export function startDrag(dragInfo: DragInfo, x: number, y: number, element: HTM
   startY = y;
   active = false;
   draggedEl = element;
-  setTextSelectionSuppressed();
   document.addEventListener("pointermove", handlePointerMove);
   document.addEventListener("pointerup", handlePointerUp);
   document.addEventListener("pointercancel", handlePointerCancel);
