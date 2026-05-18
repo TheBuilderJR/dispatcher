@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildTmuxNewWindowCommand,
   buildTmuxPaneCaptureCommand,
+  buildTmuxPaneCursorCommand,
   buildTmuxPaneSnapshotCommand,
   buildTmuxWindowSnapshotCommand,
   encodeTmuxSendKeysHex,
@@ -99,6 +100,9 @@ describe("tmuxControlProtocol", () => {
     );
     expect(buildTmuxPaneSnapshotCommand({ targetWindowId: "@24" })).toBe(
       'list-panes -t @24 -F "#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}\\t#{history_size}"'
+    );
+    expect(buildTmuxPaneCursorCommand("%3")).toBe(
+      'display-message -p -t %3 "#{cursor_x}\\t#{cursor_y}"'
     );
     expect(buildTmuxPaneCaptureCommand({ paneId: "%3" })).toBe("capture-pane -p -e -C -S -50000 -t %3");
     expect(buildTmuxPaneCaptureCommand({ paneId: "%3", historySize: 42 })).toBe(

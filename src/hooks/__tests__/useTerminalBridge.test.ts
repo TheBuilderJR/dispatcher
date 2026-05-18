@@ -18,6 +18,7 @@ const {
     scrollToBottom: ReturnType<typeof vi.fn>;
     write: ReturnType<typeof vi.fn>;
     resize: ReturnType<typeof vi.fn>;
+    clear: ReturnType<typeof vi.fn>;
     cols: number;
     rows: number;
   }>,
@@ -421,6 +422,43 @@ describe("useTerminalBridge synthetic input", () => {
       expect.any(Function)
     );
     expect(useTerminalStore.getState().sessions["tmux-pane-test"].lastOutputAt).toBe(0);
+
+    disposeTerminalInstance("tmux-pane-test");
+  });
+
+  it("replaces buffered output and clears xterm before authoritative tmux history replay", async () => {
+    useTerminalStore.getState().addSession("tmux-pane-test", "A");
+    useTerminalStore.getState().patchSession("tmux-pane-test", {
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: "session-1",
+      tmuxWindowId: "@1",
+      tmuxPaneId: "%1",
+    });
+
+    ensureTerminalScreenshotTarget("tmux-pane-test");
+    const parkingRoot = document.getElementById("dispatcher-terminal-parking-root");
+    const element = parkingRoot?.firstElementChild as HTMLDivElement | null;
+    expect(element).not.toBeNull();
+    document.body.appendChild(element!);
+
+    queueTerminalOutput("tmux-pane-test", "stale buffered live output\n");
+    queueTerminalOutput("tmux-pane-test", "authoritative capture\n", {
+      recordActivity: false,
+      allowParkedWrite: true,
+      replaceBufferedOutput: true,
+      clearScrollbackBeforeWrite: true,
+    });
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
+    expect(createdTerminals[0].clear).toHaveBeenCalledTimes(1);
+    expect(createdTerminals[0].write).toHaveBeenCalledTimes(1);
+    expect(createdTerminals[0].write).toHaveBeenCalledWith(
+      "authoritative capture\n",
+      expect.any(Function)
+    );
+    expect(createdTerminals[0].clear.mock.invocationCallOrder[0]).toBeLessThan(
+      createdTerminals[0].write.mock.invocationCallOrder[0]
+    );
 
     disposeTerminalInstance("tmux-pane-test");
   });

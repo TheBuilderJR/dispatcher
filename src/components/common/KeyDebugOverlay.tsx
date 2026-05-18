@@ -99,6 +99,7 @@ function formatStatusDetail(entry: StatusDebugEntry): string {
   const change = [
     entry.changed !== undefined ? `changed=${String(entry.changed)}` : null,
     entry.changedForStatus !== undefined ? `statusChanged=${String(entry.changedForStatus)}` : null,
+    entry.timestampOnlyStatus ? "timestampOnly=true" : null,
     entry.ignoreVisualChange ? `ignored=${entry.visualChangeIgnoredReason ?? "true"}` : null,
     entry.changedRows !== undefined ? `rows=${entry.changedRows}` : null,
     entry.changedChars !== undefined ? `chars=${entry.changedChars}` : null,

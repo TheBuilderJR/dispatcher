@@ -59,6 +59,30 @@ function isTmuxStatusSession(session: TerminalSession): boolean {
   return session.backendKind === "tmux-window" || session.backendKind === "tmux-pane";
 }
 
+export function shouldUseTimestampOnlyStatus(sessions: readonly TerminalSession[]): boolean {
+  // Tmux control mode already gives us a precise signal when pane data arrives.
+  // Visual sampling is weaker for tmux because focus redraws, cursor updates,
+  // and capture replays can change the xterm buffer without agent progress.
+  return sessions.some(isTmuxStatusSession);
+}
+
+export function resolveTimestampStatusChangedAt(args: {
+  timestampOnlyStatus: boolean;
+  latestActivityAt: number;
+  previousChangedAt: number;
+  now: number;
+}): { changed: boolean; changedAt: number } {
+  const hasTimestampBaseline = args.previousChangedAt > 0;
+  const changed = hasTimestampBaseline && args.latestActivityAt > args.previousChangedAt;
+  const changedAt = args.timestampOnlyStatus
+    ? (args.latestActivityAt > 0 ? args.latestActivityAt : args.now)
+    : changed || !hasTimestampBaseline
+      ? (args.latestActivityAt > 0 ? args.latestActivityAt : args.now)
+      : args.previousChangedAt;
+
+  return { changed, changedAt };
+}
+
 async function hashScreenshot(screenshot: string): Promise<string> {
   const bytes = new TextEncoder().encode(screenshot);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -474,12 +498,13 @@ export function useTerminalScreenshotMonitor() {
         0
       );
       const latestActivityAt = Math.max(lastUserInputAt, lastOutputAt);
-      const hasTimestampBaseline = previousActivityAt > 0;
-      const changed = hasTimestampBaseline && latestActivityAt > previousActivityAt;
-      const changedAt =
-        changed || !hasTimestampBaseline
-          ? (latestActivityAt > 0 ? latestActivityAt : args.now)
-          : previousActivityAt;
+      const timestampOnlyStatus = shouldUseTimestampOnlyStatus(latestSessions);
+      const { changed, changedAt } = resolveTimestampStatusChangedAt({
+        timestampOnlyStatus,
+        latestActivityAt,
+        previousChangedAt: previousActivityAt,
+        now: args.now,
+      });
       const effectiveChangedAt = Math.max(changedAt, lastUserInputAt, lastOutputAt);
       const hasDetectedActivity =
         latestSessions.some((session) => session.hasDetectedActivity)
@@ -564,6 +589,7 @@ export function useTerminalScreenshotMonitor() {
         shouldKeepBrownUntilInput,
         visualSampled: false,
         reason: args.reason,
+        timestampOnlyStatus,
         backendKinds: [...new Set(latestSessions.map((session) => session.backendKind))],
       };
 
@@ -913,6 +939,7 @@ export function useTerminalScreenshotMonitor() {
             shouldKeepAttentionUntilFocus,
             shouldKeepBrownUntilInput,
             visualSampled: true,
+            timestampOnlyStatus: false,
             backendKinds: [...new Set(latestSessions.map((session) => session.backendKind))],
           };
           if (ignoreVisualChange) {
@@ -1069,6 +1096,19 @@ export function useTerminalScreenshotMonitor() {
         });
       }
 
+      for (const tabRootTerminalId of tabRootTerminalIds) {
+        const statusTerminalIds = getTabStatusTerminalIds(layouts, tabRootTerminalId, sessionIds);
+        const statusSessions = statusTerminalIds
+          .map((terminalId) => store.sessions[terminalId])
+          .filter((session): session is TerminalSession => session !== undefined);
+        if (statusSessions.length > 0 && shouldUseTimestampOnlyStatus(statusSessions)) {
+          previousHashes.delete(tabRootTerminalId);
+          previousComponents.delete(tabRootTerminalId);
+          recentHashes.delete(tabRootTerminalId);
+          previousTabSignatures.delete(tabRootTerminalId);
+        }
+      }
+
       const selection = selectVisualSampleTabRootTerminalIds({
         tabRootTerminalIds,
         activeTabRootTerminalId,
@@ -1076,7 +1116,15 @@ export function useTerminalScreenshotMonitor() {
         cursor: visualSampleCursor,
         canSample: (tabRootTerminalId) => {
           const terminalIds = getTabTerminalIds(layouts, tabRootTerminalId, sessionIds);
-          return terminalIds.length > 0 && terminalIds.every((terminalId) => hasTerminalFrontend(terminalId));
+          const statusTerminalIds = getTabStatusTerminalIds(layouts, tabRootTerminalId, sessionIds);
+          const statusSessions = statusTerminalIds
+            .map((terminalId) => store.sessions[terminalId])
+            .filter((session): session is TerminalSession => session !== undefined);
+          return (
+            terminalIds.length > 0
+            && terminalIds.every((terminalId) => hasTerminalFrontend(terminalId))
+            && !shouldUseTimestampOnlyStatus(statusSessions)
+          );
         },
       });
       visualSampleCursor = selection.nextCursor;

@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   sendSyntheticTerminalInput,
   suppressTransientFocusSequences,
+  type TerminalPasteProgress,
+  useTerminalPasteProgress,
   useTerminalBridge,
 } from "../../hooks/useTerminalBridge";
 import { useResizeObserver } from "../../hooks/useResizeObserver";
@@ -33,6 +35,36 @@ interface TerminalPaneProps {
   onClose?: (terminalId: string) => void;
 }
 
+function formatPasteSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${Math.ceil(bytes / 1024)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function getPasteProgressLabel(progress: TerminalPasteProgress): string {
+  if (progress.phase === "pasting") {
+    return "Applying paste";
+  }
+  if (progress.totalChunks && progress.totalChunks > 1) {
+    return `Pasting ${progress.completedChunks}/${progress.totalChunks}`;
+  }
+  return progress.phase === "preparing" ? "Preparing paste" : "Pasting";
+}
+
+function getPasteProgressPercent(progress: TerminalPasteProgress): number {
+  if (progress.phase === "pasting") {
+    return 100;
+  }
+  if (!progress.totalChunks || progress.totalChunks <= 0) {
+    return 8;
+  }
+  return Math.max(8, Math.min(96, (progress.completedChunks / progress.totalChunks) * 100));
+}
+
 export function TerminalPane({
   terminalId,
   layoutId,
@@ -41,6 +73,7 @@ export function TerminalPane({
 }: TerminalPaneProps) {
   const cwd = useTerminalStore((s) => s.sessions[terminalId]?.cwd);
   const { containerRef, searchAddonRef, xtermRef, fit } = useTerminalBridge({ terminalId, cwd });
+  const pasteProgress = useTerminalPasteProgress(terminalId);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -335,6 +368,20 @@ export function TerminalPane({
         </div>
       )}
       <div className="terminal-container" ref={containerRef} />
+      {pasteProgress && (
+        <div className="terminal-paste-progress" role="status" aria-live="polite">
+          <div className="terminal-paste-progress-row">
+            <span>{getPasteProgressLabel(pasteProgress)}</span>
+            <span>{formatPasteSize(pasteProgress.totalBytes)}</span>
+          </div>
+          <div className="terminal-paste-progress-track">
+            <div
+              className="terminal-paste-progress-bar"
+              style={{ width: `${getPasteProgressPercent(pasteProgress)}%` }}
+            />
+          </div>
+        </div>
+      )}
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x}

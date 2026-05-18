@@ -41,6 +41,7 @@ export interface StatusDebugEntry {
   nextLongInactive?: boolean;
   shouldKeepAttentionUntilFocus?: boolean;
   shouldKeepBrownUntilInput?: boolean;
+  timestampOnlyStatus?: boolean;
   backendKinds?: string[];
 }
 

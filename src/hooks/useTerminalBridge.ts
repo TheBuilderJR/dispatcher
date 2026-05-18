@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -30,6 +30,7 @@ import {
   routeTmuxTransportOutput,
   sendInputToTmuxTerminal,
   sendPasteToTmuxTerminal,
+  type TmuxPasteProgress,
 } from "../lib/tmuxControl";
 
 // ---------------------------------------------------------------------------
@@ -63,6 +64,21 @@ interface FocusSequenceSuppression {
 interface QueuedTerminalOutputOptions {
   recordActivity?: boolean;
   allowParkedWrite?: boolean;
+  /**
+   * Authoritative tmux captures already represent the pane state at a point in
+   * the tmux event stream. If ordinary output is still waiting in our RAF
+   * buffer, replaying it before the capture can briefly show stale/interleaved
+   * frames. A capture with this flag replaces pending buffered writes; output
+   * that arrives after the capture remains queued after it.
+   */
+  replaceBufferedOutput?: boolean;
+  /**
+   * CSI 3J is part of the replay string, but xterm exposes a native clear()
+   * that is more reliable when the parser is mid-frame or a previous large
+   * write is still draining. Use this only for full history replays where
+   * clearing scrollback is intentional.
+   */
+  clearScrollbackBeforeWrite?: boolean;
 }
 
 type SkippedTmuxWriteReason = "parked" | "missing-frontend";
@@ -81,6 +97,7 @@ interface TerminalBridgeRuntimeState {
   focusSequenceSuppressions: Map<string, FocusSequenceSuppression>;
   writeBuffers: Map<string, string[]>;
   writeBufferAllowParked: Set<string>;
+  writeBufferClearScrollback: Set<string>;
   writeRafs: Map<string, number>;
   writeTimeouts: Map<string, ReturnType<typeof setTimeout>>;
   writeInFlight: Set<string>;
@@ -89,6 +106,17 @@ interface TerminalBridgeRuntimeState {
   parkedTmuxActivityLastRecordedAt: Map<string, number>;
   webglFailures: Map<Terminal, number>;
   webglProbeTimers: Map<Terminal, ReturnType<typeof setTimeout>>;
+  pasteProgressByTerminal: Map<string, TerminalPasteProgress>;
+}
+
+export interface TerminalPasteProgress {
+  terminalId: string;
+  phase: TmuxPasteProgress["phase"];
+  completedChunks: number;
+  totalChunks: number | null;
+  totalBytes: number;
+  startedAt: number;
+  updatedAt: number;
 }
 
 declare global {
@@ -106,9 +134,11 @@ function getTerminalBridgeRuntimeState(): TerminalBridgeRuntimeState {
     });
     globalThis.__dispatcherTerminalBridgeRuntimeState.writeInFlight ??= new Set<string>();
     globalThis.__dispatcherTerminalBridgeRuntimeState.writeBufferAllowParked ??= new Set<string>();
+    globalThis.__dispatcherTerminalBridgeRuntimeState.writeBufferClearScrollback ??= new Set<string>();
     globalThis.__dispatcherTerminalBridgeRuntimeState.writeTimeouts ??= new Map<string, ReturnType<typeof setTimeout>>();
     globalThis.__dispatcherTerminalBridgeRuntimeState.parkedTmuxWriteDrops ??= new Map<string, ParkedTmuxWriteDropSummary>();
     globalThis.__dispatcherTerminalBridgeRuntimeState.parkedTmuxActivityLastRecordedAt ??= new Map<string, number>();
+    globalThis.__dispatcherTerminalBridgeRuntimeState.pasteProgressByTerminal ??= new Map<string, TerminalPasteProgress>();
     return globalThis.__dispatcherTerminalBridgeRuntimeState;
   }
 
@@ -119,6 +149,7 @@ function getTerminalBridgeRuntimeState(): TerminalBridgeRuntimeState {
     focusSequenceSuppressions: new Map<string, FocusSequenceSuppression>(),
     writeBuffers: new Map<string, string[]>(),
     writeBufferAllowParked: new Set<string>(),
+    writeBufferClearScrollback: new Set<string>(),
     writeRafs: new Map<string, number>(),
     writeTimeouts: new Map<string, ReturnType<typeof setTimeout>>(),
     writeInFlight: new Set<string>(),
@@ -127,6 +158,7 @@ function getTerminalBridgeRuntimeState(): TerminalBridgeRuntimeState {
     parkedTmuxActivityLastRecordedAt: new Map<string, number>(),
     webglFailures: new Map<Terminal, number>(),
     webglProbeTimers: new Map<Terminal, ReturnType<typeof setTimeout>>(),
+    pasteProgressByTerminal: new Map<string, TerminalPasteProgress>(),
   };
   globalThis.__dispatcherTerminalBridgeRuntimeState = created;
   debugLog("terminal.runtime", "initialize", {
@@ -158,12 +190,15 @@ const SLOW_SCREENSHOT_CAPTURE_MS = 80;
 
 const writeBuffers = terminalBridgeRuntime.writeBuffers;
 const writeBufferAllowParked = terminalBridgeRuntime.writeBufferAllowParked;
+const writeBufferClearScrollback = terminalBridgeRuntime.writeBufferClearScrollback;
 const writeRafs = terminalBridgeRuntime.writeRafs;
 const writeTimeouts = terminalBridgeRuntime.writeTimeouts;
 const writeInFlight = terminalBridgeRuntime.writeInFlight;
 const writeStatusRecorded = terminalBridgeRuntime.writeStatusRecorded;
 const parkedTmuxWriteDrops = terminalBridgeRuntime.parkedTmuxWriteDrops;
 const parkedTmuxActivityLastRecordedAt = terminalBridgeRuntime.parkedTmuxActivityLastRecordedAt;
+const pasteProgressByTerminal = terminalBridgeRuntime.pasteProgressByTerminal;
+const TERMINAL_PASTE_PROGRESS_EVENT = "dispatcher:terminal-paste-progress";
 const TERMINAL_RESPONSE_QUERY_PATTERN =
   /\x1b(?:\[(?:\??6n|>c|c)|\](?:(?:1[0-2])|4;\d+);\?(?:\x07|\x1b\\))/;
 const HIDDEN_WRITE_FALLBACK_MS = 50;
@@ -201,6 +236,72 @@ function markPastedTerminalActivity(terminalId: string, text: string) {
   reflectImmediateTabActivity(terminalId);
 }
 
+function emitPasteProgressChange(terminalId: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.dispatchEvent(
+    new CustomEvent(TERMINAL_PASTE_PROGRESS_EVENT, {
+      detail: { terminalId },
+    })
+  );
+}
+
+function setTerminalPasteProgress(
+  terminalId: string,
+  progress: Omit<TerminalPasteProgress, "terminalId" | "updatedAt"> | null
+) {
+  if (!progress) {
+    if (pasteProgressByTerminal.delete(terminalId)) {
+      emitPasteProgressChange(terminalId);
+    }
+    return;
+  }
+
+  pasteProgressByTerminal.set(terminalId, {
+    terminalId,
+    ...progress,
+    updatedAt: Date.now(),
+  });
+  emitPasteProgressChange(terminalId);
+}
+
+export function getTerminalPasteProgress(terminalId: string): TerminalPasteProgress | null {
+  return pasteProgressByTerminal.get(terminalId) ?? null;
+}
+
+export function subscribeTerminalPasteProgress(
+  terminalId: string,
+  listener: (progress: TerminalPasteProgress | null) => void
+): () => void {
+  if (typeof window === "undefined") {
+    return () => {};
+  }
+
+  const handleProgress = (event: Event) => {
+    const detail = (event as CustomEvent<{ terminalId?: string }>).detail;
+    if (detail?.terminalId !== terminalId) {
+      return;
+    }
+    listener(getTerminalPasteProgress(terminalId));
+  };
+  window.addEventListener(TERMINAL_PASTE_PROGRESS_EVENT, handleProgress);
+  return () => window.removeEventListener(TERMINAL_PASTE_PROGRESS_EVENT, handleProgress);
+}
+
+export function useTerminalPasteProgress(terminalId: string): TerminalPasteProgress | null {
+  const [progress, setProgress] = useState<TerminalPasteProgress | null>(
+    () => getTerminalPasteProgress(terminalId)
+  );
+
+  useEffect(() => {
+    setProgress(getTerminalPasteProgress(terminalId));
+    return subscribeTerminalPasteProgress(terminalId, setProgress);
+  }, [terminalId]);
+
+  return progress;
+}
+
 async function pasteTextIntoTerminal(terminalId: string, xterm: Terminal, text: string) {
   pushKeyDebug(`terminal.paste-data:${terminalId}`, describeTerminalData(text));
   xterm.focus();
@@ -209,7 +310,26 @@ async function pasteTextIntoTerminal(terminalId: string, xterm: Terminal, text: 
   if (backendKind === "tmux-pane") {
     markPastedTerminalActivity(terminalId, text);
     xterm.scrollToBottom();
-    await sendPasteToTmuxTerminal(terminalId, text);
+    const startedAt = Date.now();
+    setTerminalPasteProgress(terminalId, {
+      phase: "preparing",
+      completedChunks: 0,
+      totalChunks: null,
+      totalBytes: text.length,
+      startedAt,
+    });
+    try {
+      await sendPasteToTmuxTerminal(terminalId, text, {
+        onProgress: (progress) => {
+          setTerminalPasteProgress(terminalId, {
+            ...progress,
+            startedAt,
+          });
+        },
+      });
+    } finally {
+      setTerminalPasteProgress(terminalId, null);
+    }
     return;
   }
 
@@ -328,6 +448,7 @@ function drainTerminalWriteBuffer(terminalId: string) {
   const combined = buf.join("");
   buf.length = 0;
   const allowParkedWrite = writeBufferAllowParked.delete(terminalId);
+  const clearScrollbackBeforeWrite = writeBufferClearScrollback.delete(terminalId);
   const instance = instances.get(terminalId);
   const xterm = instance?.xterm;
   if (!xterm) {
@@ -355,6 +476,9 @@ function drainTerminalWriteBuffer(terminalId: string) {
   }
 
   writeInFlight.add(terminalId);
+  if (clearScrollbackBeforeWrite) {
+    xterm.clear();
+  }
   xterm.write(combined, () => {
     const durationMs = performance.now() - drainStartedAt;
     writeInFlight.delete(terminalId);
@@ -476,10 +600,17 @@ function batchedWrite(
   if (!buffer) {
     buffer = [];
     writeBuffers.set(terminalId, buffer);
+  } else if (options?.replaceBufferedOutput) {
+    buffer.length = 0;
+    writeBufferAllowParked.delete(terminalId);
+    writeBufferClearScrollback.delete(terminalId);
   }
   buffer.push(data);
   if (options?.allowParkedWrite) {
     writeBufferAllowParked.add(terminalId);
+  }
+  if (options?.clearScrollbackBeforeWrite) {
+    writeBufferClearScrollback.add(terminalId);
   }
 
   const shouldRecordOutput =
@@ -550,6 +681,7 @@ function disposeWriteBatch(terminalId: string) {
   clearBufferedWriteTimeout(terminalId);
   writeBuffers.delete(terminalId);
   writeBufferAllowParked.delete(terminalId);
+  writeBufferClearScrollback.delete(terminalId);
   writeInFlight.delete(terminalId);
   writeStatusRecorded.delete(terminalId);
   parkedTmuxWriteDrops.delete(terminalId);
@@ -1479,6 +1611,7 @@ export function disposeTerminalInstance(terminalId: string) {
   disposeWriteBatch(terminalId);
   syntheticInputSuppressions.delete(terminalId);
   focusSequenceSuppressions.delete(terminalId);
+  setTerminalPasteProgress(terminalId, null);
 }
 
 // ---------------------------------------------------------------------------

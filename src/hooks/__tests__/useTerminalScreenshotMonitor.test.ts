@@ -1,9 +1,30 @@
 import { describe, expect, it } from "vitest";
 import {
+  resolveTimestampStatusChangedAt,
   selectVisualSampleTabRootTerminalIds,
   shouldIgnoreTmuxFocusVisualChange,
+  shouldUseTimestampOnlyStatus,
   shouldWriteScreenshotDebugArtifact,
 } from "../useTerminalScreenshotMonitor";
+import type { TerminalSession } from "../../types/terminal";
+
+function session(patch: Partial<TerminalSession> = {}): TerminalSession {
+  return {
+    id: "s",
+    title: "Shell",
+    notes: "",
+    cwd: undefined,
+    hasDetectedActivity: false,
+    lastUserInputAt: 0,
+    lastOutputAt: 0,
+    isNeedsAttention: false,
+    isPossiblyDone: false,
+    isLongInactive: false,
+    isRecentlyFocused: false,
+    backendKind: "local",
+    ...patch,
+  };
+}
 
 describe("shouldIgnoreTmuxFocusVisualChange", () => {
   it("ignores tmux redraws that only reflect focus churn", () => {
@@ -62,6 +83,46 @@ describe("selectVisualSampleTabRootTerminalIds", () => {
       cursor: 0,
       canSample: () => false,
     })).toEqual({ selected: [], nextCursor: 0 });
+  });
+});
+
+describe("shouldUseTimestampOnlyStatus", () => {
+  it("uses timestamp-only status for tmux tabs", () => {
+    expect(shouldUseTimestampOnlyStatus([
+      session({ backendKind: "tmux-pane" }),
+    ])).toBe(true);
+    expect(shouldUseTimestampOnlyStatus([
+      session({ backendKind: "tmux-window" }),
+    ])).toBe(true);
+    expect(shouldUseTimestampOnlyStatus([
+      session({ backendKind: "local" }),
+    ])).toBe(false);
+  });
+});
+
+describe("resolveTimestampStatusChangedAt", () => {
+  it("uses tmux output time rather than a newer visual sample baseline", () => {
+    expect(resolveTimestampStatusChangedAt({
+      timestampOnlyStatus: true,
+      latestActivityAt: 10_000,
+      previousChangedAt: 20_000,
+      now: 21_000,
+    })).toEqual({
+      changed: false,
+      changedAt: 10_000,
+    });
+  });
+
+  it("keeps the previous visual baseline for non-tmux timestamp fallback", () => {
+    expect(resolveTimestampStatusChangedAt({
+      timestampOnlyStatus: false,
+      latestActivityAt: 10_000,
+      previousChangedAt: 20_000,
+      now: 21_000,
+    })).toEqual({
+      changed: false,
+      changedAt: 20_000,
+    });
   });
 });
 

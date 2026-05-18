@@ -10,6 +10,7 @@ import {
   TMUX_CONTROL_START,
   buildTmuxNewWindowCommand,
   buildTmuxPaneCaptureCommand,
+  buildTmuxPaneCursorCommand,
   buildTmuxPaneSnapshotCommand,
   buildTmuxWindowSnapshotCommand,
   encodeTmuxSendKeysHex,
@@ -88,6 +89,11 @@ interface TmuxPaneState {
   cwd?: string;
   cursorX: number;
   cursorY: number;
+  // tmux %output notifications carry bytes only; they do not include the
+  // resulting cursor position. Once pane output arrives, the cached
+  // #{cursor_x}/#{cursor_y} values from the last pane snapshot are unsafe for
+  // capture replays until we refresh them explicitly.
+  cursorStaleSinceOutput: boolean;
   alternateOn: boolean;
   historySize: number;
   initialContentCaptured: boolean;
@@ -97,6 +103,20 @@ interface TmuxPaneState {
   historyCaptureInFlight: boolean;
   missedOutputSinceHistoryCapture: boolean;
   contentClearGeneration: number;
+  outputGeneration: number;
+}
+
+export type TmuxPasteProgressPhase = "preparing" | "buffering" | "pasting";
+
+export interface TmuxPasteProgress {
+  phase: TmuxPasteProgressPhase;
+  completedChunks: number;
+  totalChunks: number;
+  totalBytes: number;
+}
+
+interface TmuxPasteOptions {
+  onProgress?: (progress: TmuxPasteProgress) => void;
 }
 
 interface WindowProjectionResult {
@@ -262,6 +282,8 @@ function ensurePaneHistoryCaptureState(pane: TmuxPaneState) {
   pane.historyCaptureInFlight ??= false;
   pane.missedOutputSinceHistoryCapture ??= false;
   pane.contentClearGeneration ??= 0;
+  pane.outputGeneration ??= 0;
+  pane.cursorStaleSinceOutput ??= false;
 }
 
 function ensurePaneOutputActivitySuppressionState(session: TmuxControlSession) {
@@ -740,6 +762,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       cwd: session.cwd,
       cursorX: 0,
       cursorY: 0,
+      cursorStaleSinceOutput: false,
       alternateOn: false,
       historySize: 0,
       initialContentCaptured: false,
@@ -749,6 +772,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       historyCaptureInFlight: false,
       missedOutputSinceHistoryCapture: false,
       contentClearGeneration: 0,
+      outputGeneration: 0,
     });
     paneTerminalToSessionId.set(session.id, sessionId);
 
@@ -1621,6 +1645,7 @@ function upsertWindowProjection(
         cwd: paneSnapshot.cwd,
         cursorX: paneSnapshot.cursorX,
         cursorY: paneSnapshot.cursorY,
+        cursorStaleSinceOutput: false,
         alternateOn: paneSnapshot.alternateOn,
         historySize: paneSnapshot.historySize,
         initialContentCaptured: false,
@@ -1630,6 +1655,7 @@ function upsertWindowProjection(
         historyCaptureInFlight: false,
         missedOutputSinceHistoryCapture: false,
         contentClearGeneration: 0,
+        outputGeneration: 0,
       };
       session.panes.set(paneSnapshot.paneId, paneState);
       paneTerminalToSessionId.set(terminalId, session.id);
@@ -1699,6 +1725,7 @@ function upsertWindowProjection(
     paneState.cwd = paneSnapshot.cwd;
     paneState.cursorX = paneSnapshot.cursorX;
     paneState.cursorY = paneSnapshot.cursorY;
+    paneState.cursorStaleSinceOutput = false;
     paneState.alternateOn = paneSnapshot.alternateOn;
     paneState.historySize = paneSnapshot.historySize;
     if (
@@ -2008,6 +2035,133 @@ async function sendCommand(session: TmuxControlSession, command: string): Promis
   });
 }
 
+function parsePaneCursorLine(line: string): { cursorX: number; cursorY: number } | null {
+  const [cursorXRaw, cursorYRaw] = line.split("\t");
+  const cursorX = Number.parseInt(cursorXRaw ?? "", 10);
+  const cursorY = Number.parseInt(cursorYRaw ?? "", 10);
+  if (!Number.isFinite(cursorX) || !Number.isFinite(cursorY)) {
+    return null;
+  }
+  return {
+    cursorX: Math.max(0, cursorX),
+    cursorY: Math.max(0, cursorY),
+  };
+}
+
+function updatePaneAlternateScreenFromOutput(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  output: string
+) {
+  let nextAlternateOn = pane.alternateOn;
+  let sawAlternateMode = false;
+  const privateModePattern = /\x1b\[\?([0-9;]+)([hl])/g;
+
+  for (const match of output.matchAll(privateModePattern)) {
+    const modes = match[1].split(";");
+    if (!modes.some((mode) => mode === "47" || mode === "1047" || mode === "1049")) {
+      continue;
+    }
+    sawAlternateMode = true;
+    nextAlternateOn = match[2] === "h";
+  }
+
+  if (!sawAlternateMode || nextAlternateOn === pane.alternateOn) {
+    return;
+  }
+
+  pane.alternateOn = nextAlternateOn;
+  debugLog("tmux.capture", "pane alternate screen mode from output", {
+    sessionId: session.id,
+    paneId: pane.paneId,
+    terminalId: pane.terminalId,
+    alternateOn: pane.alternateOn,
+  });
+}
+
+function buildPaneReplayOutput(options: {
+  pane: TmuxPaneState;
+  content: string;
+  cursorX: number;
+  cursorY: number;
+  clearScrollback: boolean;
+}): string {
+  const screenModePrefix = options.pane.alternateOn ? "\u001b[?1049h" : "\u001b[?1049l";
+  const clearScrollbackSequence = options.clearScrollback ? "\u001b[3J" : "";
+  const cursorRow = Math.max(1, Math.floor(options.cursorY) + 1);
+  const cursorCol = Math.max(1, Math.floor(options.cursorX) + 1);
+  return `${screenModePrefix}\u001b[0m\u001b[?7l\u001b[H\u001b[2J${clearScrollbackSequence}${options.content}\u001b[?7h\u001b[0m\u001b[${cursorRow};${cursorCol}H`;
+}
+
+async function resolvePaneCursorForCapture(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  outputGeneration: number,
+  reason: string
+): Promise<{ cursorX: number; cursorY: number } | null> {
+  ensurePaneHistoryCaptureState(pane);
+  if (!pane.cursorStaleSinceOutput) {
+    return {
+      cursorX: pane.cursorX,
+      cursorY: pane.cursorY,
+    };
+  }
+
+  debugLog("tmux.capture", "refresh stale pane cursor for replay", {
+    sessionId: session.id,
+    paneId: pane.paneId,
+    terminalId: pane.terminalId,
+    reason,
+    outputGeneration,
+    cachedCursorX: pane.cursorX,
+    cachedCursorY: pane.cursorY,
+  });
+
+  const lines = await sendCommand(session, buildTmuxPaneCursorCommand(pane.paneId));
+  const currentPane = session.panes.get(pane.paneId);
+  if (currentPane?.terminalId !== pane.terminalId) {
+    debugLog("tmux.capture", "skip cursor refresh for stale pane", {
+      sessionId: session.id,
+      paneId: pane.paneId,
+      terminalId: pane.terminalId,
+      reason,
+    });
+    return null;
+  }
+  ensurePaneHistoryCaptureState(currentPane);
+  if (currentPane.outputGeneration !== outputGeneration) {
+    debugLog("tmux.capture", "skip pane replay after raced output during cursor refresh", {
+      sessionId: session.id,
+      paneId: pane.paneId,
+      terminalId: pane.terminalId,
+      reason,
+      outputGeneration,
+      currentOutputGeneration: currentPane.outputGeneration,
+    });
+    return null;
+  }
+
+  const parsed = parsePaneCursorLine(lines[0] ?? "");
+  if (!parsed) {
+    debugLog("tmux.capture", "pane cursor refresh parse failed", {
+      sessionId: session.id,
+      paneId: pane.paneId,
+      terminalId: pane.terminalId,
+      reason,
+      response: previewDebugText(lines.join("\n"), 120),
+    });
+    return {
+      cursorX: currentPane.cursorX,
+      cursorY: currentPane.cursorY,
+    };
+  }
+
+  currentPane.cursorX = parsed.cursorX;
+  currentPane.cursorY = parsed.cursorY;
+  currentPane.cursorStaleSinceOutput = false;
+  return parsed;
+}
+
 function clearInitialPaneCaptureQueue(session: TmuxControlSession) {
   ensureInitialPaneCaptureState(session);
   if (session.initialPaneCaptureTimer !== null) {
@@ -2202,6 +2356,7 @@ async function capturePaneFullContent(
 
   pane.historyCaptureInFlight = true;
   const captureGeneration = pane.contentClearGeneration;
+  const outputGeneration = pane.outputGeneration;
   const useFallbackHistory =
     options.forceFallbackHistory === true
     && !pane.alternateOn
@@ -2258,15 +2413,49 @@ async function capturePaneFullContent(
       });
       return;
     }
+    if (currentPane.outputGeneration !== outputGeneration) {
+      if (options.initial) {
+        currentPane.initialContentCaptured = false;
+      }
+      currentPane.missedOutputSinceHistoryCapture = true;
+      debugLog("tmux.capture", "skip pane full content after raced output", {
+        sessionId: session.id,
+        paneId: pane.paneId,
+        terminalId: pane.terminalId,
+        reason: options.reason,
+        outputGeneration,
+        currentOutputGeneration: currentPane.outputGeneration,
+      });
+      return;
+    }
+
+    const cursor = await resolvePaneCursorForCapture(
+      session,
+      currentPane,
+      outputGeneration,
+      options.reason
+    );
+    if (!cursor) {
+      return;
+    }
 
     ensureTerminalFrontend(pane.terminalId);
-    const cursorRow = Math.max(1, Math.floor(currentPane.cursorY) + 1);
-    const cursorCol = Math.max(1, Math.floor(currentPane.cursorX) + 1);
     const content = unescapeTmuxOutput(lines.join("\r\n"));
     queueTerminalOutput(
       pane.terminalId,
-      `\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3J${content}\u001b[?7h\u001b[0m\u001b[${cursorRow};${cursorCol}H`,
-      { recordActivity: false, allowParkedWrite: true }
+      buildPaneReplayOutput({
+        pane: currentPane,
+        content,
+        cursorX: cursor.cursorX,
+        cursorY: cursor.cursorY,
+        clearScrollback: true,
+      }),
+      {
+        recordActivity: false,
+        allowParkedWrite: true,
+        replaceBufferedOutput: true,
+        clearScrollbackBeforeWrite: true,
+      }
     );
     currentPane.initialContentCaptured = true;
     currentPane.lastHistoryCaptureSize = currentPane.historySize;
@@ -2324,6 +2513,7 @@ async function redrawVisiblePaneContent(
 ) {
   ensurePaneHistoryCaptureState(pane);
   const captureGeneration = pane.contentClearGeneration;
+  const outputGeneration = pane.outputGeneration;
   debugLog("tmux.capture", "visible pane redraw start", {
     sessionId: session.id,
     paneId: pane.paneId,
@@ -2365,15 +2555,40 @@ async function redrawVisiblePaneContent(
     });
     return;
   }
+  if (currentPane.outputGeneration !== outputGeneration) {
+    debugLog("tmux.capture", "skip visible pane redraw after raced output", {
+      sessionId: session.id,
+      paneId: pane.paneId,
+      terminalId: pane.terminalId,
+      reason,
+      outputGeneration,
+      currentOutputGeneration: currentPane.outputGeneration,
+    });
+    return;
+  }
+
+  const cursor = await resolvePaneCursorForCapture(
+    session,
+    currentPane,
+    outputGeneration,
+    reason
+  );
+  if (!cursor) {
+    return;
+  }
 
   ensureTerminalFrontend(pane.terminalId);
-  const cursorRow = Math.max(1, Math.floor(currentPane.cursorY) + 1);
-  const cursorCol = Math.max(1, Math.floor(currentPane.cursorX) + 1);
   const content = unescapeTmuxOutput(lines.join("\r\n"));
   queueTerminalOutput(
     pane.terminalId,
-    `\u001b[0m\u001b[?7l\u001b[H\u001b[2J${content}\u001b[?7h\u001b[0m\u001b[${cursorRow};${cursorCol}H`,
-    { recordActivity: false }
+    buildPaneReplayOutput({
+      pane: currentPane,
+      content,
+      cursorX: cursor.cursorX,
+      cursorY: cursor.cursorY,
+      clearScrollback: false,
+    }),
+    { recordActivity: false, replaceBufferedOutput: true }
   );
   debugLog("tmux.capture", "visible pane redraw complete", {
     sessionId: session.id,
@@ -2848,7 +3063,14 @@ function teardownControlSession(session: TmuxControlSession, reason: string) {
 function parseOutputNotification(line: string): { paneId: string; value: string } | null {
   const match = /^%output\s+(\S+)\s?(.*)$/.exec(line);
   if (!match) {
-    return null;
+    const extendedMatch = /^%extended-output\s+(\S+)\s+\S+(?:\s+(?!:)\S+)*\s+:\s?(.*)$/.exec(line);
+    if (!extendedMatch) {
+      return null;
+    }
+    return {
+      paneId: extendedMatch[1],
+      value: extendedMatch[2] ?? "",
+    };
   }
   return {
     paneId: match[1],
@@ -2857,7 +3079,7 @@ function parseOutputNotification(line: string): { paneId: string; value: string 
 }
 
 function handleNotification(session: TmuxControlSession, line: string) {
-  if (line.startsWith("%output ")) {
+  if (line.startsWith("%output ") || line.startsWith("%extended-output ")) {
     const parsed = parseOutputNotification(line);
     if (!parsed) {
       debugLog("tmux.notify", "output parse failed", {
@@ -2899,6 +3121,10 @@ function handleNotification(session: TmuxControlSession, line: string) {
     }
 
     const output = unescapeTmuxOutput(parsed.value);
+    ensurePaneHistoryCaptureState(pane);
+    pane.outputGeneration += 1;
+    pane.cursorStaleSinceOutput = true;
+    updatePaneAlternateScreenFromOutput(session, pane, output);
     markPaneOutputMissedByHistoryCapture(session, pane, parsed.value.length);
     if (recordActivity) {
       queueTerminalOutput(pane.terminalId, output);
@@ -3413,7 +3639,11 @@ function chunkTmuxPasteBufferText(data: string): string[] {
   return chunks;
 }
 
-export async function sendPasteToTmuxTerminal(terminalId: string, data: string): Promise<boolean> {
+export async function sendPasteToTmuxTerminal(
+  terminalId: string,
+  data: string,
+  options?: TmuxPasteOptions
+): Promise<boolean> {
   const pane = getTmuxPaneStateByTerminal(terminalId);
   const session = pane ? getControlSessionForTerminal(terminalId) : null;
   if (!pane || !session) {
@@ -3438,6 +3668,12 @@ export async function sendPasteToTmuxTerminal(terminalId: string, data: string):
 
   const bufferName = `dispatcher-paste-${Date.now().toString(36)}-${tmuxPasteBufferSequence++}`;
   const chunks = chunkTmuxPasteBufferText(normalized);
+  options?.onProgress?.({
+    phase: "preparing",
+    completedChunks: 0,
+    totalChunks: chunks.length,
+    totalBytes: normalized.length,
+  });
   debugLog("tmux.paste", "send", {
     terminalId,
     sessionId: session.id,
@@ -3452,9 +3688,21 @@ export async function sendPasteToTmuxTerminal(terminalId: string, data: string):
     const appendFlag = index === 0 ? "" : " -a";
     await sendCommand(
       session,
-      `set-buffer${appendFlag} -b ${bufferName} ${quoteTmuxCommandArgument(chunk)}`
+      `set-buffer${appendFlag} -b ${bufferName} -- ${quoteTmuxCommandArgument(chunk)}`
     );
+    options?.onProgress?.({
+      phase: "buffering",
+      completedChunks: index + 1,
+      totalChunks: chunks.length,
+      totalBytes: normalized.length,
+    });
   }
+  options?.onProgress?.({
+    phase: "pasting",
+    completedChunks: chunks.length,
+    totalChunks: chunks.length,
+    totalBytes: normalized.length,
+  });
   await sendCommand(session, `paste-buffer -p -d -b ${bufferName} -t ${pane.paneId}`);
 
   return true;
