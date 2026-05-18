@@ -951,8 +951,8 @@ describe("tmuxControl", () => {
     );
   });
 
-  it("forces a visible redraw rebaseline after repeated capture races", async () => {
-    const transportTerminalId = "transport-visible-redraw-force-after-races";
+  it("keeps retrying visible redraws instead of forcing a stale capture after repeated races", async () => {
+    const transportTerminalId = "transport-visible-redraw-no-force-after-races";
     seedTransportTerminal(transportTerminalId);
 
     await hydrateSingleWindow(transportTerminalId);
@@ -990,31 +990,20 @@ describe("tmuxControl", () => {
 
     await vi.advanceTimersByTimeAsync(300);
     routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kfourth tui frame\n");
-    completeTmuxCommandWithLines(transportTerminalId, 6, ["forced authoritative frame"]);
+    completeTmuxCommandWithLines(transportTerminalId, 6, ["still stale authoritative frame"]);
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(writeTerminalMock).toHaveBeenCalledWith(
-      transportTerminalId,
-      'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n'
-    );
-
-    completeTmuxCommandWithLines(transportTerminalId, 7, ["4\t7"]);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+    expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
       paneTerminalId,
-      expect.stringContaining("forced authoritative frame"),
-      { recordActivity: false, replaceBufferedOutput: true }
+      expect.stringContaining("still stale authoritative frame"),
+      expect.anything()
     );
   });
 
-  it("forces a visible redraw rebaseline after repeated cursor refresh races", async () => {
-    const transportTerminalId = "transport-visible-redraw-force-after-cursor-races";
+  it("keeps retrying visible redraws instead of forcing a stale cursor-raced capture", async () => {
+    const transportTerminalId = "transport-visible-redraw-no-force-after-cursor-races";
     seedTransportTerminal(transportTerminalId);
 
     await hydrateSingleWindow(transportTerminalId);
@@ -1059,7 +1048,7 @@ describe("tmuxControl", () => {
     );
 
     await vi.advanceTimersByTimeAsync(300);
-    completeTmuxCommandWithLines(transportTerminalId, 8, ["forced cursor-raced frame"]);
+    completeTmuxCommandWithLines(transportTerminalId, 8, ["still stale cursor-raced frame"]);
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -1070,10 +1059,65 @@ describe("tmuxControl", () => {
     await Promise.resolve();
     await Promise.resolve();
 
+    expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
+      paneTerminalId,
+      expect.stringContaining("still stale cursor-raced frame"),
+      expect.anything()
+    );
+  });
+
+  it("does not replay a visible redraw captured before user input", async () => {
+    const transportTerminalId = "transport-visible-redraw-user-input";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    useTerminalStore.getState().setActiveTerminal(paneTerminalId);
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Klive tui frame\n");
+    await vi.advanceTimersByTimeAsync(180);
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+
+    const inputPromise = sendInputToTmuxTerminal(paneTerminalId, "vim ~/.bash_profile\r");
+    completeTmuxCommandWithLines(transportTerminalId, 4, ["shell frame before vim"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
+      paneTerminalId,
+      expect.stringContaining("shell frame before vim"),
+      expect.anything()
+    );
+    completeTmuxCommandWithLines(transportTerminalId, 5, []);
+    await expect(inputPromise).resolves.toBe(true);
+  });
+
+  it("does not schedule live visible redraw repairs while an alternate-screen app is active", async () => {
+    const transportTerminalId = "transport-visible-redraw-alternate-screen";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    useTerminalStore.getState().setActiveTerminal(paneTerminalId);
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[?1049h\\033[Hvim frame\n");
+    await vi.advanceTimersByTimeAsync(500);
+
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       paneTerminalId,
-      expect.stringContaining("forced cursor-raced frame"),
-      { recordActivity: false, replaceBufferedOutput: true }
+      "\u001b[?1049h\u001b[Hvim frame"
+    );
+    expect(writeTerminalMock).not.toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -a -q -t %1\n"
     );
   });
 
