@@ -206,9 +206,13 @@ interface TmuxRuntimeState {
   transportRawCarry: Map<string, string>;
 }
 
+export type TmuxTransportOutputRouter = (terminalId: string, data: string) => string;
+
 declare global {
   // eslint-disable-next-line no-var
   var __dispatcherTmuxRuntimeState: TmuxRuntimeState | undefined;
+  // eslint-disable-next-line no-var
+  var __dispatcherTmuxTransportOutputRouter: TmuxTransportOutputRouter | undefined;
 }
 
 function generateId(): string {
@@ -873,6 +877,10 @@ function getControlSessionById(sessionId: string | undefined): TmuxControlSessio
     ensurePaneOutputActivitySuppressionState(session);
   }
   return session;
+}
+
+export function getCurrentTmuxTransportOutputRouter(): TmuxTransportOutputRouter {
+  return globalThis.__dispatcherTmuxTransportOutputRouter ?? routeTmuxTransportOutput;
 }
 
 function getControlSessionForTerminal(terminalId: string): TmuxControlSession | null {
@@ -3999,6 +4007,8 @@ export function routeTmuxTransportOutput(terminalId: string, data: string): stri
 
   return passthrough;
 }
+
+globalThis.__dispatcherTmuxTransportOutputRouter = routeTmuxTransportOutput;
 
 export function isTmuxPaneTerminal(terminalId: string): boolean {
   return getTerminalSession(terminalId)?.backendKind === "tmux-pane";

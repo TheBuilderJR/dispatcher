@@ -27,7 +27,7 @@ import { debugLog } from "../lib/debugLog";
 import { isLinkOpenModifierPressed } from "../lib/terminalMouse";
 import {
   clearTmuxTerminal,
-  routeTmuxTransportOutput,
+  getCurrentTmuxTransportOutputRouter,
   sendInputToTmuxTerminal,
   sendPasteToTmuxTerminal,
   type TmuxPasteProgress,
@@ -1050,7 +1050,10 @@ function ensureTerminalBackend(terminalId: string, cwd?: string) {
 
     const channel = new Channel<TerminalOutputPayload>();
     channel.onmessage = (msg) => {
-      const nextData = routeTmuxTransportOutput(msg.terminal_id, msg.data);
+      // Tauri channels live for the lifetime of the PTY. In dev, Vite can hot
+      // swap tmuxControl.ts without recreating this callback, so resolve the
+      // current router lazily instead of capturing a stale module function.
+      const nextData = getCurrentTmuxTransportOutputRouter()(msg.terminal_id, msg.data);
       if (nextData) {
         batchedWrite(msg.terminal_id, nextData);
       }

@@ -8,6 +8,7 @@ const {
   appendDebugLogMock,
   createdTerminals,
   createdFitAddons,
+  createdChannels,
 } = vi.hoisted(() => ({
   createTerminalMock: vi.fn(async () => {}),
   writeTerminalMock: vi.fn(async () => {}),
@@ -24,6 +25,9 @@ const {
   }>,
   createdFitAddons: [] as Array<{
     fit: ReturnType<typeof vi.fn>;
+  }>,
+  createdChannels: [] as Array<{
+    onmessage: ((message: { terminal_id: string; data: string }) => void) | null;
   }>,
 }));
 
@@ -117,6 +121,12 @@ vi.mock("@xterm/addon-webgl", () => {
 vi.mock("@tauri-apps/api/core", () => {
   class ChannelMock<T> {
     onmessage: ((message: T) => void) | null = null;
+
+    constructor() {
+      createdChannels.push(this as unknown as {
+        onmessage: ((message: { terminal_id: string; data: string }) => void) | null;
+      });
+    }
   }
 
   return {
@@ -154,6 +164,7 @@ describe("useTerminalBridge synthetic input", () => {
   beforeEach(() => {
     createdTerminals.length = 0;
     createdFitAddons.length = 0;
+    createdChannels.length = 0;
     createTerminalMock.mockClear();
     writeTerminalMock.mockClear();
     resizeTerminalMock.mockClear();
@@ -162,6 +173,7 @@ describe("useTerminalBridge synthetic input", () => {
     document.body.innerHTML = "";
     useLayoutStore.setState({ layouts: {} });
     useTerminalStore.setState({ sessions: {}, activeTerminalId: null });
+    globalThis.__dispatcherTmuxTransportOutputRouter = undefined;
   });
 
   afterEach(() => {
@@ -171,6 +183,7 @@ describe("useTerminalBridge synthetic input", () => {
     disposeTerminalInstance("tmux-pane-test");
     disposeTerminalInstance("tmux-pane-no-frontend");
     disposeTerminalInstance("term-query-test");
+    globalThis.__dispatcherTmuxTransportOutputRouter = undefined;
     disposeTerminalInstance("tab-root");
     disposeTerminalInstance("pane");
   });
@@ -187,6 +200,25 @@ describe("useTerminalBridge synthetic input", () => {
 
     expect(createdTerminals[0].scrollToBottom).toHaveBeenCalledTimes(1);
     expect(writeTerminalMock).toHaveBeenCalledWith("term-scroll-test", "\u0003");
+  });
+
+  it("routes existing PTY channel output through the current tmux router", async () => {
+    ensureTerminalScreenshotTarget("term-query-test");
+    expect(createdChannels).toHaveLength(1);
+
+    const router = vi.fn(() => "routed passthrough");
+    globalThis.__dispatcherTmuxTransportOutputRouter = router;
+    createdChannels[0].onmessage?.({
+      terminal_id: "term-query-test",
+      data: "raw transport output",
+    });
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
+    expect(router).toHaveBeenCalledWith("term-query-test", "raw transport output");
+    expect(createdTerminals[0].write).toHaveBeenCalledWith(
+      "routed passthrough",
+      expect.any(Function)
+    );
   });
 
   it("resizes an existing xterm frontend to match a tmux pane grid", () => {
